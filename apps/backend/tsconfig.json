@@ -1,0 +1,12 @@
+{
+  "extends": ["../../tsconfig.base.json"],
+  "include": ["api", "tests", "*.ts"],
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    // Node runs these files directly via type stripping
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
+  }
+}

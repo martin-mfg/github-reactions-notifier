@@ -1,0 +1,11 @@
+---
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+
+import { Home } from "../components/Home";
+---
+
+<StarlightPage
+  frontmatter={{ title: "GitHub Reactions Notifier", template: "splash" }}
+>
+  <Home />
+</StarlightPage>

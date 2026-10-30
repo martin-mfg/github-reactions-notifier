@@ -1,0 +1,81 @@
+# GitHub Reactions Notifier
+
+Notifies you about reactions to your GitHub issues, pull requests and comments.
+
+The requirements live in [reactions-notifier-m1-requirements.md](reactions-notifier-m1-requirements.md).
+
+## Layout
+
+| Path            | Contents                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `apps/backend`  | Express server (`express.ts`) serving the handlers under `api/` and the built frontend.                            |
+| `apps/frontend` | Static Astro site (React + Starlight docs).                                                                        |
+| `packages/core` | Code adapted from [github-stats-extended](https://github.com/stats-organization/github-stats-extended), see below. |
+
+`@grn/core` is meant to be shared with github-stats-extended later, so its files keep the source repo's layout:
+
+| Path             | Contents                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| `src/common`     | Config, logging, errors, the GitHub GraphQL retryer and HTTP helpers, Postgres pool. |
+| `src/graphql`    | Typed GraphQL documents and their generated types.                                   |
+| `src/users.ts`   | GitHub OAuth code exchange.                                                          |
+| `sql/schema.sql` | The database schema.                                                                 |
+
+Code in `packages/` must never import from `apps/`.
+
+## Setup
+
+Requires Node 24 and pnpm (see `packageManager` in `package.json`).
+
+```sh
+pnpm install
+cp apps/backend/.env.example apps/backend/.env   # then fill it in
+```
+
+### Database
+
+The schema is applied by hand, not by the app. Run it against an empty database:
+
+```sh
+psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f packages/core/sql/schema.sql
+```
+
+### Environment variables (backend)
+
+| Variable              | Purpose                                       |
+| --------------------- | --------------------------------------------- |
+| `POSTGRES_URL`        | Postgres connection string.                   |
+| `OAUTH_CLIENT_ID`     | GRN's own GitHub OAuth App.                   |
+| `OAUTH_CLIENT_SECRET` | Its client secret.                            |
+| `OAUTH_REDIRECT_URI`  | Its callback URL.                             |
+| `PAT_1`, `PAT_2`, ... | Personal access tokens for the GitHub client. |
+| `PORT`                | Port to listen on: 80 in Docker, else 9000.   |
+
+## Commands
+
+| Command             | Does                                                  |
+| ------------------- | ----------------------------------------------------- |
+| `pnpm dev:backend`  | Serves the API (and the built frontend) on port 9000. |
+| `pnpm dev:frontend` | Astro dev server; proxies `/api` to the backend.      |
+| `pnpm test`         | Runs all tests.                                       |
+| `pnpm lint`         | ESLint in every workspace.                            |
+| `pnpm lint:knip`    | Unused files, exports and dependencies.               |
+| `pnpm typecheck`    | TypeScript in every workspace.                        |
+| `pnpm format`       | Prettier.                                             |
+
+After editing a `.graphql` file under `packages/core/src/graphql/queries`, regenerate its types:
+
+```sh
+pnpm --filter ./packages/core run generate-graphql-types
+```
+
+## Deployment
+
+The app is deployed as a Docker image, which Vercel runs from `Dockerfile.vercel`: one container runs the backend, which also serves the built frontend.
+Every release publishes a multi-platform image (amd64/arm64) to the GitHub Container Registry (`.github/workflows/release.yml`).
+
+```sh
+docker run -d -p 9000:80 --env-file apps/backend/.env ghcr.io/martin-mfg/github-reactions-notifier:latest
+```
+
+The instance is then available at `http://localhost:9000`. To build the image yourself, run `docker build -f Dockerfile.vercel .` from the repository root.

@@ -1,0 +1,8 @@
+.git
+**/build
+**/node_modules
+**/tests
+**/.turbo
+**/.astro
+
+**/.env

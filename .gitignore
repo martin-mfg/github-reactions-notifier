@@ -1,0 +1,24 @@
+node_modules
+
+# OS
+.DS_Store
+
+# Project
+coverage
+
+apps/backend/.env
+
+apps/frontend/.env
+# Astro's generated types and content store
+apps/frontend/.astro
+
+.turbo
+build
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.code-workspace

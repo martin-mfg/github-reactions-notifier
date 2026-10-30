@@ -1,0 +1,7 @@
+-- GRN database schema.
+--
+-- Creates everything GRN needs in an empty database. It is applied by hand, e.g.:
+--
+--   psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f packages/core/sql/schema.sql
+--
+-- The tables of the M1 data model (requirements §13) are added in implementation step 2.
