@@ -64,7 +64,7 @@ const config = {
   useTypeImports: true,
   // enums and input types come from the common file, imported only where used
   importSchemaTypesFrom: COMMON_IMPORT_PATH,
-  scalars: { DateTime: "string" },
+  scalars: { DateTime: "string", URI: "string" },
 };
 
 // GitHub's SDL declares a few fields twice, which trips SDL validation

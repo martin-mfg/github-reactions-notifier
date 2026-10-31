@@ -893,6 +893,27 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    and the watermark advancing with the upserts. An edited old comment doesn't end the comment
    pass early, and an overflowing pass logs an error, makes no second query, and still
    advances its watermark.
+   *Status:* done. The task is `runIncrementalDiscovery` in
+   `apps/backend/src/discovery/incremental.ts`, its query
+   `packages/core/src/graphql/queries/authoredDiscovery.graphql`, and the shared upserts into
+   `content`, `content_sources` and `tracked_content` are in
+   `apps/backend/src/discovery/store.ts` (for step 6 to reuse). Decided in step 5:
+   - The task is one complete `sync` task: one query, then one fenced transaction that stores
+     the passes, advances their watermarks, sets the category's `last_checked_at` (and
+     `last_find_at`), refreshes `users.login`, and releases the job. A failed query is settled
+     by `settleSyncFailure` and changes nothing else. Choosing the category to run (scoring,
+     `D_discovery`) is left to step 7.
+   - The page is filtered, not walked: every item with `sort_value ≥ watermark` is kept, so an
+     edited old comment above the watermark is tracked too. Its `last_event_at` is its
+     `createdAt`.
+   - "Finding anything new" means inserting a `tracked_content` row the user didn't have.
+   - A comment's `content.title` is its thread's title (`issue { title }`, which a PR comment
+     resolves to the PR). Checked against the live API, where the query also measured 1 point
+     and returned only new-format ids in the expected orders.
+   - A `viewer.id` other than the job's user is logged as an `ALERT:` error and retried as
+     transient (§12), and nothing is stored.
+   - A changed login is logged (NFR-7's login mismatches) and stored in the same transaction.
+   - The codegen maps the `URI` scalar to `string`, as it does `DateTime`.
 6. **Backfill and thread scans:** the window, per-page progress, the own-content filter, the
    login check, thread scans, and the completion check.
    *Accept:* tests cover resuming after an interruption, newest-first order, and the

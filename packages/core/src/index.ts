@@ -30,6 +30,11 @@ export { pool } from "./common/pool.js";
 
 export { graphqlDocument } from "./graphql/graphqlDocument.js";
 export type { GraphQLDocument } from "./graphql/graphqlDocument.js";
+export { AuthoredDiscoveryDocument } from "./graphql/generated/authoredDiscovery.js";
+export type {
+  AuthoredDiscoveryQuery,
+  AuthoredDiscoveryQueryVariables,
+} from "./graphql/generated/authoredDiscovery.js";
 export { ViewerDocument } from "./graphql/generated/viewer.js";
 export type {
   ViewerQuery,
