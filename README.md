@@ -14,20 +14,23 @@ The requirements live in [reactions-notifier-m1-requirements.md](reactions-notif
 
 `apps/backend/src` holds GRN-specific code:
 
-| Path            | Contents                                                                                      |
-| --------------- | --------------------------------------------------------------------------------------------- |
-| `config.ts`     | Tunables from requirements §14, with their defaults.                                          |
-| `db.ts`         | The minimal database interface GRN's code runs on (`pg`'s `Pool` satisfies it); transactions. |
-| `jobs/queue.ts` | The Postgres job queue: due rules, claim, lease renewal and fencing, release, and the reaper. |
+| Path                | Contents                                                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.ts`         | Tunables from requirements §14, with their defaults.                                                                                     |
+| `db.ts`             | The minimal database interface GRN's code runs on (`pg`'s `Pool` satisfies it); transactions.                                            |
+| `jobs/queue.ts`     | The Postgres job queue: due rules, claim, lease renewal and fencing, release, and the reaper.                                            |
+| `oauth.ts`          | The OAuth flows behind `/api/login`, `/api/delete-account` and `/api/oauth/callback`: sign-in, the no-scope check (FR-2a), and deletion. |
+| `users/accounts.ts` | The signup and returning-user sign-in transaction, reading a stored token, and account deletion (FR-3).                                  |
+| `inbox/opening.ts`  | Renders the issue that opens a user's inbox.                                                                                             |
 
 `@grn/core` is meant to be shared with github-stats-extended later, so its files keep the source repo's layout:
 
-| Path             | Contents                                                                             |
-| ---------------- | ------------------------------------------------------------------------------------ |
-| `src/common`     | Config, logging, errors, the GitHub GraphQL retryer and HTTP helpers, Postgres pool. |
-| `src/graphql`    | Typed GraphQL documents and their generated types.                                   |
-| `src/users.ts`   | GitHub OAuth code exchange.                                                          |
-| `sql/schema.sql` | The database schema.                                                                 |
+| Path             | Contents                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------ |
+| `src/common`     | Config, logging, errors, the GitHub GraphQL retryer and HTTP helpers, Postgres pool, token encryption. |
+| `src/graphql`    | Typed GraphQL documents and their generated types.                                                     |
+| `src/users.ts`   | GitHub OAuth code exchange and grant deletion.                                                         |
+| `sql/schema.sql` | The database schema.                                                                                   |
 
 Code in `packages/` must never import from `apps/`.
 
@@ -52,14 +55,15 @@ Tests need no database server: they apply `schema.sql` to an in-process Postgres
 
 ### Environment variables (backend)
 
-| Variable              | Purpose                                       |
-| --------------------- | --------------------------------------------- |
-| `POSTGRES_URL`        | Postgres connection string.                   |
-| `OAUTH_CLIENT_ID`     | GRN's own GitHub OAuth App.                   |
-| `OAUTH_CLIENT_SECRET` | Its client secret.                            |
-| `OAUTH_REDIRECT_URI`  | Its callback URL.                             |
-| `PAT_1`, `PAT_2`, ... | Personal access tokens for the GitHub client. |
-| `PORT`                | Port to listen on: 80 in Docker, else 9000.   |
+| Variable               | Purpose                                                                                                                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POSTGRES_URL`         | Postgres connection string.                                                                                                                                                             |
+| `OAUTH_CLIENT_ID`      | GRN's own GitHub OAuth App.                                                                                                                                                             |
+| `OAUTH_CLIENT_SECRET`  | Its client secret.                                                                                                                                                                      |
+| `OAUTH_REDIRECT_URI`   | Its callback URL: `<site>/api/oauth/callback`.                                                                                                                                          |
+| `TOKEN_ENCRYPTION_KEY` | Encrypts stored user tokens (AES-256-GCM): 32 bytes as hex or base64. Comma-separate several keys to rotate; the first encrypts, all decrypt. Generate one with `openssl rand -hex 32`. |
+| `PAT_1`, `PAT_2`, ...  | Personal access tokens for the GitHub client.                                                                                                                                           |
+| `PORT`                 | Port to listen on: 80 in Docker, else 9000.                                                                                                                                             |
 
 ## Commands
 

@@ -6,7 +6,7 @@ import { graphqlDocument } from "../graphqlDocument.js";
 export type ViewerQueryVariables = Exact<{ [key: string]: never }>;
 
 export type ViewerQuery = {
-  viewer: { id: string; login: string };
+  viewer: { id: string; login: string; createdAt: string };
   rateLimit: {
     cost: number;
     used: number;
@@ -23,6 +23,7 @@ query viewer {
   viewer {
     id
     login
+    createdAt
   }
   rateLimit {
     cost

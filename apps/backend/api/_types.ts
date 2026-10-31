@@ -2,6 +2,8 @@
  * The subset of Express's request/response objects the handlers use.
  */
 interface ApiRequest {
+  method?: string;
+  headers?: Record<string, string | Array<string> | undefined>;
   query: Record<string, unknown>;
 }
 
@@ -15,3 +17,5 @@ export type ApiHandler = (
   req: ApiRequest,
   res: ApiResponse,
 ) => void | Promise<void>;
+
+export type { ApiRequest, ApiResponse };

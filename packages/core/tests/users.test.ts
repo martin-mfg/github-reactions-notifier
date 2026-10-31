@@ -1,7 +1,7 @@
 import nock from "nock";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { githubAuthenticate } from "../src/index.js";
+import { deleteGrant, githubAuthenticate } from "../src/index.js";
 
 const tokenExchange = (): nock.Interceptor =>
   nock("https://github.com").post(
@@ -75,6 +75,37 @@ describe("githubAuthenticate", () => {
 
     await expect(githubAuthenticate("the-code", false)).rejects.toThrow(
       /environment variables .* are not set/,
+    );
+  });
+});
+
+describe("deleteGrant", () => {
+  beforeEach(() => {
+    vi.stubEnv("OAUTH_CLIENT_ID", "client-id");
+    vi.stubEnv("OAUTH_CLIENT_SECRET", "client-secret");
+  });
+
+  it("deletes the grant with the app's credentials", async () => {
+    const scope = nock("https://api.github.com", {
+      reqheaders: {
+        authorization: `Basic ${Buffer.from("client-id:client-secret").toString("base64")}`,
+      },
+    })
+      .delete("/applications/client-id/grant", { access_token: "gho_token" })
+      .reply(204);
+
+    await deleteGrant("gho_token");
+
+    expect(scope.isDone()).toBe(true);
+  });
+
+  it("fails on an HTTP error", async () => {
+    nock("https://api.github.com")
+      .delete("/applications/client-id/grant")
+      .reply(422);
+
+    await expect(deleteGrant("gho_token")).rejects.toThrow(
+      "OAuth Error: grant deletion: 422",
     );
   });
 });

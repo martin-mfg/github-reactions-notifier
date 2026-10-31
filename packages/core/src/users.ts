@@ -30,6 +30,39 @@ async function getUserFromToken(accessToken: string): Promise<string | null> {
 }
 
 /**
+ * Deletes the user's grant of this OAuth App, which also invalidates every token issued under
+ * it, as github-stats-extended's downgrade path does.
+ *
+ * @param accessToken Any valid token of the grant to delete.
+ */
+export async function deleteGrant(accessToken: string): Promise<void> {
+  const { OAUTH_CLIENT_ID: clientId, OAUTH_CLIENT_SECRET: clientSecret } =
+    process.env;
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "OAuth Error: One or more required environment variables (OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET) are not set.",
+    );
+  }
+
+  try {
+    await axios.delete(
+      `https://api.github.com/applications/${encodeURIComponent(clientId)}/grant`,
+      {
+        auth: { username: clientId, password: clientSecret },
+        data: { access_token: accessToken },
+        headers: { Accept: "application/vnd.github+json" },
+      },
+    );
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response) {
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error(`OAuth Error: grant deletion: ${err.response.status}`);
+    }
+    throw err;
+  }
+}
+
+/**
  * Exchanges OAuth code for access token and returns userId + accessToken
  *
  * @param code GitHub authentication code from OAuth process

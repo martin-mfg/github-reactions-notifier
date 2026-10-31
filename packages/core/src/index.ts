@@ -22,4 +22,10 @@ export type {
   ViewerQueryVariables,
 } from "./graphql/generated/viewer.js";
 
-export { githubAuthenticate } from "./users.js";
+export {
+  AccessTokenCipher,
+  TokenDecryptionError,
+} from "./common/tokenEncryption.js";
+export type { EncryptedToken } from "./common/tokenEncryption.js";
+
+export { deleteGrant, githubAuthenticate } from "./users.js";

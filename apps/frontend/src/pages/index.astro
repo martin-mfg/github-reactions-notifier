@@ -2,10 +2,12 @@
 import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
 
 import { Home } from "../components/Home";
+import { StatusMessage } from "../components/StatusMessage";
 ---
 
 <StarlightPage
   frontmatter={{ title: "GitHub Reactions Notifier", template: "splash" }}
 >
+  <StatusMessage client:only="react" />
   <Home />
 </StarlightPage>

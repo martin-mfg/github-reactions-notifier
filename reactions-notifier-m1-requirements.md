@@ -827,6 +827,26 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    an undecryptable token yields `'invalid'`, concurrent sign-ins open only one inbox, a
    returning sign-in sets `token_status = 'active'`, and deletion leaves no rows about the
    user, including global `content` and `reaction_events`.
+   *Status:* done. The flows are in `apps/backend/src/oauth.ts`, the sign-in and deletion
+   transactions in `apps/backend/src/users/accounts.ts`, the opening's text in
+   `apps/backend/src/inbox/opening.ts`, and NFR-3's cipher in
+   `packages/core/src/common/tokenEncryption.ts`. Decided in step 3:
+   - GRN keeps no sessions. Deletion re-authenticates through the same OAuth flow, and GitHub
+     skips its consent page for an authorized app. The callback deletes the data of the
+     fresh token's `viewer`, then deletes the grant with that token. The form is a POST
+     accepted only from the same origin (`Sec-Fetch-Site`, else `Origin`).
+   - A random `state` mirrored in a 10-minute `HttpOnly` cookie ties each callback to a flow
+     the browser started. It also carries the action (`signin`/`delete`) and the FR-2a
+     attempt. A scoped token deletes the grant and restarts once; a second scoped token ends
+     the flow with an error message.
+   - `token_enc` is `v1.<auth tag>.<ciphertext>` (base64), `token_nonce` the 12-byte IV
+     (base64), and the AAD is `gh_user_id`. `TOKEN_ENCRYPTION_KEY` is required and may list
+     several comma-separated keys: the first encrypts, all decrypt.
+   - Reading a token that does not decrypt sets `token_status = 'invalid'` only if the stored
+     token is unchanged, so a concurrent sign-in's new token is not clobbered.
+   - The search overlap margin defaults to 1 h until M0 measures the search lag (§14).
+   - Deletion deletes the user's jobs first, then the user (cascading), then the
+     `reaction_events` and `content` rows no remaining user references.
 4. **Budget and GitHub client:** the per-user-token mode, the `X-Github-Next-Global-ID: 1`
    header (already sent since step 1), `rateLimit` selection and the cost alarm, header capture, the guard, the rollover
    rule, the 2-min timeout, secondary limits, `401` handling (FR-17), §12's
