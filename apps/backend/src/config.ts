@@ -49,6 +49,11 @@ export interface Config {
   discoveryWeight: number;
   /** Most items one probe reads, aliased into one query (§9.3). At most 100. */
   probeBatch: number;
+  /**
+   * FR-10's batching window: a digest is due this long after it opens, and its successor this
+   * long after its own `run_at` (§10).
+   */
+  digestWindowSeconds: number;
 }
 
 export const defaultConfig: Config = {
@@ -71,4 +76,5 @@ export const defaultConfig: Config = {
   scoreExponent: 0.8,
   discoveryWeight: 2,
   probeBatch: 50,
+  digestWindowSeconds: 3 * 60,
 };

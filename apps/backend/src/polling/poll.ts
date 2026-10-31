@@ -20,6 +20,8 @@ import { present } from "../discovery/results.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
+import { fanOut } from "../pipeline/fanOut.ts";
+import type { NewReaction } from "../pipeline/fanOut.ts";
 import { scoreSql } from "../sync/score.ts";
 
 type ProbeFetcher = GraphQLFetcherFunction<
@@ -37,15 +39,6 @@ export interface PollFetchers {
   drillDown?: DrillDownFetcher;
 }
 
-/** A `reaction_events` row this poll inserted; only these flow on to fan-out (§10). */
-interface NewReaction {
-  node_id: string;
-  reactor_id: string;
-  emoji: string;
-  reacted_at: Date;
-  reactor_login: string;
-}
-
 export type PollResult =
   | {
       ok: true;
@@ -53,7 +46,10 @@ export type PollResult =
       probed: number;
       drilled: number;
       missing: number;
+      /** The `reaction_events` rows this poll inserted. */
       newReactions: Array<NewReaction>;
+      /** The `reaction_notifications` rows their fan-out queued. */
+      queued: number;
     }
   | { ok: false; failure: SyncFailure };
 
@@ -146,7 +142,8 @@ const quantile = (seconds: Array<number>, fraction: number) =>
  * 4. In one fenced transaction: inserts the reactions at or after each item's `watermark_at`
  *    into `reaction_events` (`ON CONFLICT DO NOTHING`), raises `last_event_at` to the newest
  *    reaction, moves `watermark_at` to `max(watermark_at, min(newest, probe_start −
- *    CLOCK_MARGIN))` (the hot boundary), sets every probed item's `last_checked_at = now`, and
+ *    CLOCK_MARGIN))` (the hot boundary), sets every probed item's `last_checked_at = now`, fans
+ *    the inserted reactions out to `reaction_notifications` and opens digests (§10), and
  *    releases the job.
  *
  * Reactions before `watermark_at`, which starts at the type's `enabled_at`, are never stored.
@@ -291,7 +288,7 @@ export const runPoll = async (
       ...reaction,
     })),
   );
-  const newReactions = await withLease(session.db, lease, async (client) => {
+  const stored = await withLease(session.db, lease, async (client) => {
     // before the watermark moves: it filters by the watermark the drill-down was judged by
     const { rows } = await client.query<NewReaction>(
       `INSERT INTO reaction_events (node_id, reactor_id, emoji, reacted_at, reactor_login)
@@ -331,9 +328,11 @@ export const runPoll = async (
         outcomes.map((outcome) => outcome.watermarkTo),
       ],
     );
+    const queued = await fanOut(client, rows, config);
     await releaseSync(client, lease);
-    return rows;
+    return { newReactions: rows, queued };
   });
+  const { newReactions, queued } = stored;
 
   for (const { item, query } of missing) {
     logger.log("poll: item missing, skipped", {
@@ -363,6 +362,7 @@ export const runPoll = async (
     drilled: toDrill.length,
     missing: missing.length,
     newReactions: newReactions.length,
+    queued,
     // FR-8: how long after GitHub's createdAt GRN found them
     ...(latencies.length > 0 && {
       latencyP50Seconds: quantile(latencies, 0.5),
@@ -375,5 +375,6 @@ export const runPoll = async (
     drilled: toDrill.length,
     missing: missing.length,
     newReactions,
+    queued,
   };
 };

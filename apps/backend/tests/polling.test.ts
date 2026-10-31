@@ -118,7 +118,7 @@ const nextRun = async (session: SyncSession): Promise<SyncSession> => ({
 });
 
 /**
- * Tracks an item for Alice.
+ * Tracks an item for Alice, found by her subscription.
  *
  * @param nodeId The item.
  * @param row Its `tracked_content` times, as `interval`s ago.
@@ -146,6 +146,11 @@ const track = async (
       row.eventAgo ?? "1 hour",
       row.watermarkAt ?? null,
     ],
+  );
+  await db.query(
+    `INSERT INTO content_sources (user_id, node_id, subscription_id)
+     SELECT 'U_alice', $1, id FROM subscriptions WHERE user_id = 'U_alice'`,
+    [nodeId],
   );
 };
 
@@ -294,6 +299,46 @@ describe("runPoll", () => {
     expect(row.last_event_at).toEqual(new Date(ago(60)));
     expect(row.checked_ago).toBeLessThan(5);
     expect(await syncJob()).toMatchObject({ locked_by: null });
+  });
+
+  it("queues the new reactions, the user's own included, and opens the digest", async () => {
+    const session = await setUp();
+    await track("I_1");
+    const reactions = page([
+      reaction(ago(10), { id: ALICE.id, login: ALICE.login }),
+      reaction(ago(20), bob),
+    ]);
+
+    const result = await runPoll(session, {
+      probe: probing([newestAt(ago(10))]),
+      drillDown: drilling([reactions]),
+    });
+
+    expect(result).toMatchObject({ ok: true, queued: 2 });
+    const { rows: queued } = await db.query<{ reactor_id: string }>(
+      `SELECT reactor_id FROM reaction_notifications
+       WHERE user_id = 'U_alice' AND outcome = 'queued' ORDER BY reactor_id`,
+    );
+    expect(queued.map((row) => row.reactor_id)).toEqual(["U_alice", "U_bob"]);
+    const { rows: digests } = await db.query<{ due_in: number }>(
+      `SELECT extract(epoch FROM run_at - now())::float8 AS due_in
+       FROM jobs WHERE kind = 'deliver' AND payload->>'digest' = 'true'`,
+    );
+    expect(digests).toHaveLength(1);
+    expect(digests[0]?.due_in).toBeGreaterThan(170);
+    expect(digests[0]?.due_in).toBeLessThanOrEqual(180);
+    expect(logger.log).toHaveBeenCalledWith(
+      "poll",
+      expect.objectContaining({ newReactions: 2, queued: 2 }),
+    );
+
+    // a re-read inserts nothing, so it queues nothing (FR-7)
+    await makeDue();
+    const again = await runPoll(await nextRun(session), {
+      probe: probing([newestAt(ago(10))]),
+      drillDown: drilling([reactions]),
+    });
+    expect(again).toMatchObject({ ok: true, newReactions: [], queued: 0 });
   });
 
   it("does not drill down unless the newest reaction is strictly newer than the watermark", async () => {

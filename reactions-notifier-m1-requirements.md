@@ -1024,6 +1024,31 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    *Accept:* tests show no reaction is stranded when it is queued concurrently with rendering
    or finishing a digest, a successor is due 3 min after its predecessor's `run_at`, and there
    are no duplicates (FR-7).
+   *Status:* done. Fan-out is `fanOut` in `apps/backend/src/pipeline/fanOut.ts`; the digest
+   SQL is `openDigests`, `renderDigest` and `finishDigest` in
+   `apps/backend/src/pipeline/digest.ts`. §14's batching window is `digestWindowSeconds`.
+   Decided in step 8:
+   - Fan-out runs inside the poll's fenced transaction, after the `reaction_events` insert and
+     before the release, on only the rows that insert returned. A reaction reaches every user
+     with a `content_sources` row for its item if `reacted_at ≥` that source's
+     `enabled_at` for the item's type; there is no reactor filter (FR-12). `runPoll` returns
+     and logs how many notifications it `queued`.
+   - Digests are opened (or locked) one statement per user, in sorted user order, so
+     concurrent fan-outs can't deadlock.
+   - Finishing is two statements, not §10's one: the delete, then the successor's insert with
+     its `EXISTS` check. A single statement that is the transaction's first to wait for a
+     fan-out holding the digest's lock reads with a snapshot from before that fan-out
+     committed, and strands its reactions; this was reproduced on a real Postgres. Rendering
+     likewise starts with `SELECT … FOR UPDATE` on the job. `withLease`'s renewal takes the
+     lock first anyway; the split keeps both correct on their own. The PGlite tests run
+     transactions one after the other, so they cover every ordering; the lock waits between
+     them were checked once against a real Postgres.
+   - Rendering takes a renderer callback; the body's format, FR-15 grouping and sanitising
+     are step 9. A digest rendered before returns its stored body. The batch's wait (now −
+     `run_at`) is logged at rendering.
+   - A digest that finds nothing `queued` when rendered is finished without a post (with a
+     warning), and opens no successor.
+   - No dispatcher calls rendering or finishing yet; that is steps 9 and 10.
 9. **Dispatcher and inbox:** opening, rendering rules and FR-15 grouping, token bucket, the
    retry table, permanent failures, and the idempotency marker.
    *Accept:* tests show an ambiguous failure never double-posts, a pause blocks all `deliver`
