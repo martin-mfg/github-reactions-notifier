@@ -969,6 +969,56 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    *Accept:* tests show no pre-`enabled_at` reaction is ever stored, a hot-boundary reaction
    is found on the next poll, `D` is respected, and a drill-down overflow logs an error
    without a second query.
+   *Status:* done. The poll is `runPoll` in `apps/backend/src/polling/poll.ts`. Choosing and
+   running a `sync` job's next task is `chooseSyncTask` and `runSyncTask` in
+   `apps/backend/src/sync/schedule.ts`, and the score is `scoreSql` in
+   `apps/backend/src/sync/score.ts`. The probe and drill-down queries are built at runtime with
+   one alias per item by `packages/core/src/graphql/reactionPollDocuments.ts`, as the thread
+   scans' query is. §14 gained `minRecheckSeconds` (`D`), `discoveryMinRecheckSeconds`
+   (`D_discovery`), `scoreExponent` (`P`), `discoveryWeight` (`w`) and `probeBatch`.
+   Decided in step 7:
+   - The score is computed in SQL against `now()`. Content age is at least 1 s, and a negative
+     wait counts as 0. The candidates are every item not checked for `D` (wait since
+     `last_checked_at`, age since `last_event_at`, weight 1), every category not checked for
+     `D_discovery` (since `last_checked_at`, since `last_find_at`, weight `w`), every backfill
+     window (since `window_created_at`, since `window_end`, `w`), and every thread scan (since
+     `scan_created_at`, since `thread_created_at`, `w`). Ties break by kind, then by node or
+     category id; there is no jitter. Thread-scan batches are now ordered by the same score,
+     not newest thread first.
+   - `D_discovery` defaults to `D` (240 s) as a placeholder until the search lag is measured.
+   - If nothing is eligible, the job is released until the first item is due again (its
+     `last_checked_at + D`) or the first category is (`last_checked_at + D_discovery`),
+     whichever is sooner, and after `D` without either.
+   - A poll is one `sync` task: the probe, an optional drill-down, then one fenced transaction
+     that stores the reactions, updates every probed item, and releases the job. It probes the
+     top `probeBatch` (50, at most 100) due items by score.
+   - An item is drilled down only if its newest reaction is strictly newer than its
+     `watermark_at`, compared in whole milliseconds (the watermark floored). A newest reaction
+     at the watermark does not re-read the page each poll. Reactions at or after the
+     watermark are inserted with `ON CONFLICT DO NOTHING`, and only the inserted rows are
+     returned, for step 8's fan-out. The insert filters by the watermark in SQL, before the
+     watermark moves.
+   - The watermark moves to `max(watermark_at, min(probe's newest, probe start −
+     CLOCK_MARGIN))`. `last_event_at` is raised to the newest reaction seen, including ones
+     before the watermark. An item without reactions keeps both.
+   - A drill-down page that is full and whose oldest reaction is still at or after the
+     watermark is logged as an error. The page is stored and the watermark moves as usual;
+     there is no second query.
+   - A missing item is one that comes back `null` with a `NOT_FOUND` error at its alias, in
+     either query. It is logged, its `last_checked_at` advances, and its watermark stays, as
+     §9.3 says; nothing is untracked. Any other error at an item, such as `FORBIDDEN` (SAML),
+     fails the query as §12's unexpected responses do, the same as thread scans: a warning is
+     logged, nothing is stored, and the job is retried after `syncRetrySeconds`. A failed
+     drill-down is handled the same way, and the probe's results are not stored either.
+   - A reaction without a user (a deleted account) is still stored and notified, as GitHub's
+     `ghost`: `reactor_login = 'ghost'` and `reactor_id = 'ghost:' || createdAt`. A re-read
+     sees the same `createdAt`, so it is deduplicated as usual. Ghost reactions with the same
+     emoji in the same second become one. `reactor_id` stays `NOT NULL`, since it is part of
+     the primary keys of `reaction_events` and `reaction_notifications`.
+   - Polls send no `viewer` check; discovery's catches a changed login.
+   - FR-8's latency is logged per poll as `latencyP50Seconds` and `latencyP95Seconds` of the
+     new reactions (nearest rank, GitHub's `createdAt` to the poll's end).
+   - `runSyncTask` is not run by a worker yet; that is step 10.
 8. **Pipeline and digest:** fan-out (the `enabled_at` test; FR-12 keeps the user's own
    reactions), `reaction_notifications`, and the digest SQL.
    *Accept:* tests show no reaction is stranded when it is queued concurrently with rendering

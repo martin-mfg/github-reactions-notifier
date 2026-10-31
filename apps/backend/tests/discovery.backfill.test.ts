@@ -648,7 +648,8 @@ describe("runThreadScans", () => {
    * Queues scans for the given threads and finishes the window.
    *
    * @param categoryId The category to queue them in.
-   * @param threads Node id and `since_at` of each scan; listed newest thread first.
+   * @param threads Node id and `since_at` of each scan; listed newest thread first, which is
+   *   also the order of their scores.
    */
   const queueScans = async (
     categoryId: string,
@@ -657,8 +658,9 @@ describe("runThreadScans", () => {
     await db.query("DELETE FROM backfill_windows");
     for (const [index, [nodeId, sinceAt]] of threads.entries()) {
       await db.query(
-        `INSERT INTO thread_scans (category_id, thread_node_id, since_at, thread_created_at)
-         VALUES ($1, $2, $3, $4)`,
+        `INSERT INTO thread_scans (category_id, thread_node_id, since_at, thread_created_at,
+                                   scan_created_at)
+         VALUES ($1, $2, $3, $4, now() - interval '1 hour')`,
         [categoryId, nodeId, sinceAt, at(-100 - index)],
       );
     }
@@ -718,16 +720,25 @@ describe("runThreadScans", () => {
     expect(await isBackfillComplete(db, categoryId)).toBe(true);
   });
 
-  it("reads at most threadScanBatch threads, newest first", async () => {
+  it("reads the top threadScanBatch threads by score", async () => {
     const { session, categoryId } = await setUp();
     await queueScans(categoryId, [
       ["I_new", at(0)],
       ["I_old", at(0)],
+      ["I_waiting", at(0)],
     ]);
-    const fetcher = scanning([thread([])]);
+    // newer threads first, unless an older one has waited much longer
+    await db.query(
+      `UPDATE thread_scans SET
+         scan_created_at = now() - CASE thread_node_id
+           WHEN 'I_waiting' THEN interval '100 hours' ELSE interval '1 hour' END,
+         thread_created_at = now() - CASE thread_node_id
+           WHEN 'I_new' THEN interval '1 day' ELSE interval '100 days' END`,
+    );
+    const fetcher = scanning([thread([]), thread([])]);
 
     await runThreadScans(
-      { ...session, config: { ...defaultConfig, threadScanBatch: 1 } },
+      { ...session, config: { ...defaultConfig, threadScanBatch: 2 } },
       categoryId,
       fetcher,
     );
@@ -735,8 +746,13 @@ describe("runThreadScans", () => {
     expect(Object.keys(fetcher.mock.calls[0]?.[0] ?? {})).toEqual([
       "id_0",
       "since_0",
+      "id_1",
+      "since_1",
     ]);
-    expect(fetcher.mock.calls[0]?.[0]).toMatchObject({ id_0: "I_new" });
+    expect(fetcher.mock.calls[0]?.[0]).toMatchObject({
+      id_0: "I_waiting",
+      id_1: "I_new",
+    });
     expect((await threadScans()).map((row) => row.thread)).toEqual(["I_old"]);
   });
 

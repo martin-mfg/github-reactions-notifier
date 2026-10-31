@@ -1,7 +1,9 @@
 import { Pool } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-describe("pool", () => {
+// A fresh import of the whole package can take longer than the default 5 s under a full
+// parallel run.
+describe("pool", { timeout: 30_000 }, () => {
   afterEach(() => {
     vi.resetModules();
   });

@@ -16,6 +16,7 @@ import { defaultConfig } from "../config.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
+import { scoreSql } from "../sync/score.ts";
 
 import {
   commentItem,
@@ -116,7 +117,8 @@ const scanPage = (
  * is logged as an error and `since_at` moves one second on anyway (`[SIMPLIFIED]`, like the
  * stuck-second check). A thread that is gone is logged and its row deleted.
  *
- * Which threads to read comes from the scoring (step 7). Until then: the newest threads first.
+ * The batch is the category's top `threadScanBatch` scans by score (§9.1): the longest
+ * waiting, newest threads first.
  *
  * @param session The leased `sync` job.
  * @param categoryId The `subscription_categories.id` whose thread scans to run.
@@ -139,9 +141,15 @@ export const runThreadScans = async (
      JOIN subscription_categories c ON c.id = t.category_id
      JOIN subscriptions s ON s.id = c.subscription_id
      WHERE t.category_id = $1 AND s.user_id = $2
-     ORDER BY t.thread_created_at DESC, t.thread_node_id
+     ORDER BY ${scoreSql({
+       wait: "now() - t.scan_created_at",
+       age: "now() - t.thread_created_at",
+       exponent: "$4::float8",
+       // the same `w` for every scan, so it can't change the order
+       weight: "1",
+     })} DESC, t.thread_node_id
      LIMIT $3`,
-    [categoryId, lease.userId, config.threadScanBatch],
+    [categoryId, lease.userId, config.threadScanBatch, config.scoreExponent],
   );
   const subscriptionId = rows[0]?.subscription_id;
   if (subscriptionId === undefined) {

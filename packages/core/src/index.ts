@@ -41,6 +41,18 @@ export type {
   AuthoredDiscoveryQuery,
   AuthoredDiscoveryQueryVariables,
 } from "./graphql/generated/authoredDiscovery.js";
+export {
+  buildReactionDrillDownDocument,
+  buildReactionProbeDocument,
+} from "./graphql/reactionPollDocuments.js";
+export type {
+  DrilledItem,
+  DrilledReaction,
+  ProbedItem,
+  ReactionDrillDownQuery,
+  ReactionPollQueryVariables,
+  ReactionProbeQuery,
+} from "./graphql/reactionPollDocuments.js";
 export { buildThreadScanDocument } from "./graphql/threadScanDocument.js";
 export type {
   ScannedThread,

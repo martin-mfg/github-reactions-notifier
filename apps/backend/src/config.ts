@@ -36,6 +36,19 @@ export interface Config {
   syncRetrySeconds: number;
   /** Most threads one thread-scan task reads, aliased into one query (§9.2). */
   threadScanBatch: number;
+  /** `D`: an item is polled at most this often (§9.1). Must exceed `CLOCK_MARGIN` (§9.3). */
+  minRecheckSeconds: number;
+  /**
+   * `D_discovery`: a category's incremental discovery runs at most this often (§9.1).
+   * `[TBD]` max(search lag, `D`); the search lag is measured in M0, so the default is `D`.
+   */
+  discoveryMinRecheckSeconds: number;
+  /** `P`: the score's exponent (§9.1). Below 1, so every score grows without bound. */
+  scoreExponent: number;
+  /** `w`: the weight of discovery, backfill and thread-scan tasks against polls (§9.1). */
+  discoveryWeight: number;
+  /** Most items one probe reads, aliased into one query (§9.3). At most 100. */
+  probeBatch: number;
 }
 
 export const defaultConfig: Config = {
@@ -53,4 +66,9 @@ export const defaultConfig: Config = {
   costAlarm: 3,
   syncRetrySeconds: 5 * 60,
   threadScanBatch: 50,
+  minRecheckSeconds: 4 * 60,
+  discoveryMinRecheckSeconds: 4 * 60,
+  scoreExponent: 0.8,
+  discoveryWeight: 2,
+  probeBatch: 50,
 };

@@ -29,6 +29,9 @@ The requirements live in [reactions-notifier-m1-requirements.md](reactions-notif
 | `discovery/backfill.ts`    | The `authored` source's backfill (§9.2): one window page per task, the own-content filter, the login check, and the completion check.                        |
 | `discovery/threadScans.ts` | Thread scans (§9.2): the next page of comments of a batch of long threads, in one aliased query.                                                             |
 | `discovery/results.ts`     | What the discovery tasks share: log context, the `viewer` check, and turning comments into items.                                                            |
+| `polling/poll.ts`          | Reaction polling (§9.3): the probe, the drill-down, the hot-boundary watermark, and missing items.                                                           |
+| `sync/score.ts`            | §9.1's unified score as a SQL expression.                                                                                                                    |
+| `sync/schedule.ts`         | Picks and runs a `sync` job's next task by score (§9.1), or releases the job until one is due.                                                               |
 | `inbox/opening.ts`         | Renders the issue that opens a user's inbox.                                                                                                                 |
 | `inbox/notices.ts`         | Renders one-off notices, such as FR-17's.                                                                                                                    |
 
