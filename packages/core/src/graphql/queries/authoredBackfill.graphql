@@ -1,0 +1,98 @@
+# The `authored` source's backfill for category `issue` (requirements §9.2): one page of a
+# window's `involves:` search, newest-first. Each hit brings its first page of comments and
+# its newest reaction. `$query` holds the login and the window.
+query authoredBackfill($query: String!) {
+  viewer {
+    id
+    login
+  }
+  search(type: ISSUE, query: $query, first: 100) {
+    pageInfo {
+      hasNextPage
+    }
+    nodes {
+      ... on Issue {
+        __typename
+        id
+        url
+        title
+        createdAt
+        repository {
+          nameWithOwner
+        }
+        author {
+          login
+          ... on Node {
+            id
+          }
+        }
+        timelineItems(itemTypes: [ISSUE_COMMENT], first: 100) {
+          pageInfo {
+            hasNextPage
+          }
+          nodes {
+            ...BackfillComment
+          }
+        }
+        reactions(first: 1, orderBy: { field: CREATED_AT, direction: DESC }) {
+          nodes {
+            createdAt
+          }
+        }
+      }
+      ... on PullRequest {
+        __typename
+        id
+        url
+        title
+        createdAt
+        repository {
+          nameWithOwner
+        }
+        author {
+          login
+          ... on Node {
+            id
+          }
+        }
+        timelineItems(itemTypes: [ISSUE_COMMENT], first: 100) {
+          pageInfo {
+            hasNextPage
+          }
+          nodes {
+            ...BackfillComment
+          }
+        }
+        reactions(first: 1, orderBy: { field: CREATED_AT, direction: DESC }) {
+          nodes {
+            createdAt
+          }
+        }
+      }
+    }
+  }
+  rateLimit {
+    cost
+  }
+}
+
+# A comment of a backfilled or scanned thread. `threadScanDocument.ts` repeats it.
+fragment BackfillComment on IssueComment {
+  __typename
+  id
+  url
+  createdAt
+  repository {
+    nameWithOwner
+  }
+  # The thread's title; for a comment on a PR this is the PR's.
+  issue {
+    title
+  }
+  author {
+    login
+    ... on Node {
+      id
+    }
+  }
+}

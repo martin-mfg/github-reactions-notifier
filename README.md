@@ -26,6 +26,9 @@ The requirements live in [reactions-notifier-m1-requirements.md](reactions-notif
 | `github/writes.ts`         | Sends the machine account's writes on the mutation-safe path and classifies them by §12's table.                                                             |
 | `discovery/store.ts`       | Upserts discovered items into `content`, `content_sources` and `tracked_content`.                                                                            |
 | `discovery/incremental.ts` | The `authored` source's incremental discovery (§9.2): its three passes in one query, the watermark rules, and the overflow check.                            |
+| `discovery/backfill.ts`    | The `authored` source's backfill (§9.2): one window page per task, the own-content filter, the login check, and the completion check.                        |
+| `discovery/threadScans.ts` | Thread scans (§9.2): the next page of comments of a batch of long threads, in one aliased query.                                                             |
+| `discovery/results.ts`     | What the discovery tasks share: log context, the `viewer` check, and turning comments into items.                                                            |
 | `inbox/opening.ts`         | Renders the issue that opens a user's inbox.                                                                                                                 |
 | `inbox/notices.ts`         | Renders one-off notices, such as FR-17's.                                                                                                                    |
 

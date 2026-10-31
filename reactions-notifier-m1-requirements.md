@@ -921,6 +921,49 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    re-read doesn't reset an existing thread scan's `since_at`. Mentions and assignments of the
    user are not tracked, and a login mismatch discards the page and leaves the window
    untouched.
+   *Status:* done. The tasks are `runBackfill` in `apps/backend/src/discovery/backfill.ts`
+   (with `isBackfillComplete`) and `runThreadScans` in
+   `apps/backend/src/discovery/threadScans.ts`. The search's query is
+   `packages/core/src/graphql/queries/authoredBackfill.graphql`. The thread scans' query is
+   built at runtime with one alias per thread by `packages/core/src/graphql/threadScanDocument.ts`,
+   as github-stats-extended builds its aliased documents, and reuses the generated
+   `BackfillComment` fragment type. What the discovery tasks share (log context, the `viewer`
+   check, comment items) moved to `apps/backend/src/discovery/results.ts`. Decided in step 6:
+   - Each task is one complete `sync` task, as in step 5: one query, then one fenced
+     transaction that stores the page, moves or deletes the window (or advances or deletes the
+     thread scans), and releases the job. Neither task touches the category's
+     `last_checked_at` or `last_find_at`, which schedule incremental discovery. Choosing which
+     task to run is left to step 7.
+   - The search is `involves:LOGIN created:START..END sort:created-desc` over the category's
+     newest window, with both bounds floored to whole seconds (`+00:00` offsets). After a page
+     with more hits, `window_end` becomes its oldest hit's `createdAt`. If that is not before
+     the current `window_end`'s second, the page is stuck: an error is logged and `window_end`
+     moves one second back. The window is deleted after a page without more hits, or when
+     `window_end` would fall before `window_start`.
+   - Own content is a hit the user authored (by `author.id`), plus the user's comments in any
+     hit's inline timeline page. A thread's `last_event_at` is the newer of its `createdAt` and
+     its newest reaction. If only the hint's reaction is nulled, it falls back to `createdAt`.
+     A hint error that nulls the whole hit (`reactions` is non-null) would lose that hit's
+     comments, so the page is not stored. A warning is logged and the task is retried as
+     transient.
+   - A hit whose inline timeline has more comments gets a `thread_scans` row. Its `since_at` is
+     the newest of the hit's `createdAt` and the inline comments' `createdAt`s.
+   - A login mismatch updates `users.login` and makes the job due at once, in the same
+     fenced transaction. The page is discarded.
+   - A thread-scan task reads up to `threadScanBatch` (§14's thread scan batch, 50) threads,
+     newest thread first until step 7's scoring. Each thread is read `since` its
+     `since_at − 1 s` through query variables. A row advances with
+     `greatest(since_at, newest comment)`, and is deleted after its thread's last page. A full
+     page that doesn't pass `since_at` is logged as an error, and the row moves one second on.
+     A thread that is gone (`NOT_FOUND`) is logged, and its row is deleted.
+   - Comments get no probe; their `last_event_at` is their `createdAt`.
+   - Checked against the live API. The search parses `+00:00` and other offsets, both bounds
+     are inclusive at whole seconds, hits come newest-first, and the backfill query costs
+     2 points. `timelineItems(since:)` filters by `createdAt`, not by `updatedAt`. It returns
+     oldest-first and excludes comments at exactly `since`, so `since_at − 1 s` re-reads
+     `since_at`'s second. This holds for issues and PRs. A thread-scan query for 3 threads
+     costs 1 point, and a missing thread comes back `null` with a `NOT_FOUND` error at its
+     alias.
 7. **Scoring and polling:** the unified score, probe and drill-down, the hot-boundary
    watermark, and missing items.
    *Accept:* tests show no pre-`enabled_at` reaction is ever stored, a hot-boundary reaction

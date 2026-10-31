@@ -34,6 +34,8 @@ export interface Config {
    * again after this long. A secondary limit waits at least 60 s regardless (§12).
    */
   syncRetrySeconds: number;
+  /** Most threads one thread-scan task reads, aliased into one query (§9.2). */
+  threadScanBatch: number;
 }
 
 export const defaultConfig: Config = {
@@ -50,4 +52,5 @@ export const defaultConfig: Config = {
   requestTimeoutSeconds: 2 * 60,
   costAlarm: 3,
   syncRetrySeconds: 5 * 60,
+  threadScanBatch: 50,
 };

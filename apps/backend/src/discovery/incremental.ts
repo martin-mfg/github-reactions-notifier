@@ -14,6 +14,12 @@ import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
 
+import {
+  author,
+  present,
+  rejectForeignViewer,
+  taskContext,
+} from "./results.ts";
 import { storeDiscovered } from "./store.ts";
 import type { ContentType, DiscoveredItem, DiscoveryScope } from "./store.ts";
 
@@ -60,16 +66,6 @@ export type IncrementalDiscoveryResult =
       passes: Array<PassReport>;
     }
   | { ok: false; failure: SyncFailure };
-
-const author = (
-  actor: { id: string; login: string } | null,
-): Pick<DiscoveredItem, "authorId" | "authorLogin"> => ({
-  authorId: actor?.id ?? null,
-  authorLogin: actor?.login ?? null,
-});
-
-const present = <T>(nodes: Array<T | null> | null): Array<T> =>
-  (nodes ?? []).filter((node): node is T => node !== null);
 
 /**
  * The three passes of category `issue` (§9.2). Threads are keyed by `createdAt`. Comments are
@@ -185,12 +181,7 @@ export const runIncrementalDiscovery = async (
   fetcher: Fetcher = defaultFetcher,
 ): Promise<IncrementalDiscoveryResult> => {
   const { lease } = session;
-  const context = {
-    job: lease.id,
-    user: lease.userId,
-    kind: lease.kind,
-    category: categoryId,
-  };
+  const context = taskContext(session, categoryId);
 
   const result = await runQuery(session, fetcher, {});
   if (!result.ok) {
@@ -198,16 +189,9 @@ export const runIncrementalDiscovery = async (
     return result;
   }
   const { viewer } = result.data;
-  // Someone else's content must never be tracked as the user's. Retried as transient (§12),
-  // but alerted: this means a mixed-up token or a bug.
-  if (viewer.id !== lease.userId) {
-    logger.error("ALERT: viewer is not the job's user", {
-      ...context,
-      viewer: viewer.id,
-    });
-    const failure: SyncFailure = { kind: "transient" };
-    await settleSyncFailure(session, failure);
-    return { ok: false, failure };
+  const foreign = await rejectForeignViewer(session, viewer.id, context);
+  if (foreign) {
+    return { ok: false, failure: foreign };
   }
 
   const { newItems, passes, oldLogin } = await withLease(

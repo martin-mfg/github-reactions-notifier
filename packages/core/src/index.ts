@@ -30,11 +30,23 @@ export { pool } from "./common/pool.js";
 
 export { graphqlDocument } from "./graphql/graphqlDocument.js";
 export type { GraphQLDocument } from "./graphql/graphqlDocument.js";
+export { AuthoredBackfillDocument } from "./graphql/generated/authoredBackfill.js";
+export type {
+  AuthoredBackfillQuery,
+  AuthoredBackfillQueryVariables,
+  BackfillCommentFragment,
+} from "./graphql/generated/authoredBackfill.js";
 export { AuthoredDiscoveryDocument } from "./graphql/generated/authoredDiscovery.js";
 export type {
   AuthoredDiscoveryQuery,
   AuthoredDiscoveryQueryVariables,
 } from "./graphql/generated/authoredDiscovery.js";
+export { buildThreadScanDocument } from "./graphql/threadScanDocument.js";
+export type {
+  ScannedThread,
+  ThreadScanQuery,
+  ThreadScanQueryVariables,
+} from "./graphql/threadScanDocument.js";
 export { ViewerDocument } from "./graphql/generated/viewer.js";
 export type {
   ViewerQuery,
