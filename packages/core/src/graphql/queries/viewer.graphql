@@ -6,8 +6,5 @@ query viewer {
   }
   rateLimit {
     cost
-    used
-    remaining
-    resetAt
   }
 }

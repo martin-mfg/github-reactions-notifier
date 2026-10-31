@@ -348,8 +348,8 @@ least 1 s has passed since `level_at` (§12). Until a user's inbox issue exists 
   `[WHY]` The `elapsed` ramp spreads spend across the hour. `RESERVE` leaves the user's own
   tools room, because the budget is shared with them.
 - **Serial:** at most one in-flight request per token. Scaling comes from serving many users in parallel.
-- Select `rateLimit { cost used remaining resetAt }` in **every** query (it's free). Log
-  `cost` and alarm above 3.
+- Select `rateLimit { cost }` in **every** query (it's free). Log `cost` and alarm above 3.
+  The budget uses the headers, not the body's `used`, `remaining` and `resetAt`.
 - No cost prediction or accounting beyond this.
 - On a secondary limit (`retry-after`), set the sync job's `run_at` and release it.
 - `GET /rate_limit` is a fallback check only. Don't poll it per user.
@@ -762,6 +762,7 @@ For a returning user, the sign-in instead updates the token and login, sets
 | Dispatch rate | 480/h | Bucket refill rate |
 | Dispatch bucket capacity | 10 tokens | Largest burst of writes |
 | Request timeout | 2 min | Shorten after observing real response times |
+| Sync retry delay | 5 min | After a transient failure; ≥ 60 s after a secondary limit naming no wait |
 | Lease reap age | 15 min | Shorten after observing real commit gaps |
 | Reaper backoff | 1 min × 2^min(attempts, 8) | |
 | Search overlap margin | `[TBD]` | From the M0 lag measurement |
@@ -853,6 +854,40 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    "Unexpected responses" rule, and the separate mutation-safe write path (§6).
    *Accept:* unit tests of the guard at window edges, and an unexpected response is logged as
    a warning and retried as transient.
+   *Status:* done. `@grn/core` gained the per-user-token mode (`userTokenRetryer` in
+   `retryer.ts`), the mutation-safe path (`mutationRequest` in `mutation.ts`), and a
+   policy-free classification of every response (`outcome.ts`). GRN's policy is in
+   `apps/backend/src/github/`: the guard and header storage in `budget.ts`, the `sync` client
+   in `syncClient.ts`, the write classification in `writes.ts`. FR-17's text is in
+   `apps/backend/src/inbox/notices.ts`. Decided in step 4:
+   - Both new core paths send exactly one request: no retries, no token rotation, no sleeping.
+     They never throw for a failed request, and return the outcome (`ok`, `rate-limited`,
+     `unauthorized` or `failed`) with the response's status, GraphQL error types, message and
+     rate-limit headers. Callers decide when to try again, by setting `run_at`.
+   - The 2-min timeout is GRN's own `AbortSignal.timeout`, covering the whole request.
+   - A rate limit is recognised by a `403`/`429` with `retry-after` or
+     `x-ratelimit-remaining: 0`, a `429`, or a message containing "rate limit", which includes
+     a `RATE_LIMITED` error in a GraphQL `200`. Any other `403` is not a rate limit.
+   - Headers are stored only for the `graphql` resource (or none named), in a fenced
+     transaction right after the response. A lost lease then throws `LeaseLostError`.
+   - The guard is evaluated in TypeScript before each request, with Postgres' `now()`. A test
+     checks it agrees with the `sync` claim's SQL.
+   - A `sync` job that failed transiently is due again after a fixed 5 min (configurable). A
+     secondary limit that names no wait waits `max(60 s, that)`. The backoff is not
+     exponential because releasing a `sync` job resets its attempts (§7.3).
+   - A `401` revokes the token only if `token_enc` is unchanged, so a concurrent sign-in's
+     new token stays active. The notice is queued only when the token was revoked.
+     `loadToken` now also returns `token_enc` for this check.
+   - The notice is a rendered `deliver` job with only a `body` (no `title`, so it waits for the
+     inbox's opening). It mentions nobody and links to the site to sign in again.
+   - Each query's `rateLimit.cost` is logged; above `COST_ALARM` it is logged as an `ALERT:`
+     error. A missing `rateLimit` is logged as a warning, and the data is still used.
+     `runQuery`'s type requires each query it sends to select `rateLimit { cost }`.
+   - GraphQL errors make a response unexpected unless the caller accepts their type (as
+     §9.3's missing items will). An unexpected write, including a `401` or `422`, is a
+     warning and transient. Every write rate limit is logged as an `ALERT:` error.
+   - `logger.warn` was added to the shared logger.
+   - The `Date`-header clock-skew alarm is left to step 10 (NFR-7).
 5. **Incremental discovery:** the three aliased passes and the watermark rules.
    *Accept:* tests cover a failed query leaving the watermark unchanged, ties at the boundary,
    and the watermark advancing with the upserts. An edited old comment doesn't end the comment

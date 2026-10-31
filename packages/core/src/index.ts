@@ -9,9 +9,23 @@ export {
 } from "./common/error.js";
 export type { ErrorDetails } from "./common/error.js";
 export { logger } from "./common/log.js";
-export { retryer } from "./common/retryer.js";
+export { retryer, userTokenRetryer } from "./common/retryer.js";
+export type { GraphQLFetcherFunction } from "./common/retryer.js";
 export { createGraphQLFetcher, request } from "./common/http.js";
-export type { GraphQLResponse } from "./common/http.js";
+export type { FetcherOptions, GraphQLResponse } from "./common/http.js";
+export { mutationRequest } from "./common/mutation.js";
+export type { MutationRequest } from "./common/mutation.js";
+export {
+  classifyError,
+  classifyResponse,
+  parseRateLimitHeaders,
+} from "./common/outcome.js";
+export type {
+  GitHubOutcome,
+  GraphQLError,
+  RateLimitHeaders,
+  ResponseDetails,
+} from "./common/outcome.js";
 export { pool } from "./common/pool.js";
 
 export { graphqlDocument } from "./graphql/graphqlDocument.js";

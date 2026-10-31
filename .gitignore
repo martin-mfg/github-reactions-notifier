@@ -15,6 +15,7 @@ apps/frontend/.astro
 .turbo
 build
 *.tsbuildinfo
+AGENTS.md
 
 # IDE
 .idea/

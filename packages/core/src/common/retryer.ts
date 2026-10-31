@@ -2,7 +2,10 @@ import type { AxiosResponse } from "axios";
 
 import { getConfig } from "./config.js";
 import { CustomError } from "./error.js";
+import type { FetcherOptions } from "./http.js";
 import { logger } from "./log.js";
+import { classifyError, classifyResponse } from "./outcome.js";
+import type { GitHubOutcome, GraphQLError } from "./outcome.js";
 
 /**
  * Delays (in milliseconds) applied before a retry that was caused by a
@@ -152,4 +155,46 @@ const retryer = async <TData = unknown, TVariables = Record<string, unknown>>(
   );
 };
 
-export { retryer };
+/** A typed GraphQL fetcher, as `createGraphQLFetcher` creates, that takes an abort signal. */
+type GraphQLFetcherFunction<TResult, TVariables> = (
+  variables: TVariables,
+  token: string,
+  retriesForTests: number,
+  options: FetcherOptions,
+) => Promise<
+  AxiosResponse<{ data: TResult | null; errors?: Array<GraphQLError> }>
+>;
+
+/**
+ * The retryer's per-user-token mode: sends the query exactly once, with the one token given.
+ *
+ * Unlike {@link retryer}, it never rotates tokens, never retries and never sleeps. Every
+ * response, including rate limits and errors, comes back classified, with its rate-limit
+ * headers, so the caller can account for the budget and decide when to try again.
+ *
+ * @template TResult The query's result.
+ * @template TVariables The query's variables.
+ * @param fetcher Fetcher created by `createGraphQLFetcher`.
+ * @param variables The query's variables.
+ * @param token The user's own token.
+ * @param options Request options.
+ * @param options.timeoutMs The request is aborted after this long, and counts as failed.
+ * @returns The classified outcome. It never throws for a failed request.
+ */
+const userTokenRetryer = async <TResult, TVariables>(
+  fetcher: GraphQLFetcherFunction<TResult, TVariables>,
+  variables: TVariables,
+  token: string,
+  { timeoutMs }: { timeoutMs: number },
+): Promise<GitHubOutcome<TResult>> => {
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response = await fetcher(variables, token, 0, { signal });
+    return classifyResponse<TResult>(response, "graphql");
+  } catch (error) {
+    return classifyError<TResult>(error, "graphql", signal.aborted);
+  }
+};
+
+export { retryer, userTokenRetryer };
+export type { GraphQLFetcherFunction };

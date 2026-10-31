@@ -6,12 +6,7 @@ import { ViewerDocument, createGraphQLFetcher, request } from "../src/index.js";
 const viewerResult = {
   data: {
     viewer: { id: "U_kgDOABCDEF", login: "octocat" },
-    rateLimit: {
-      cost: 1,
-      used: 1,
-      remaining: 4999,
-      resetAt: "2026-01-01T00:00:00Z",
-    },
+    rateLimit: { cost: 1 },
   },
 };
 

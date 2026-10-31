@@ -7,12 +7,7 @@ export type ViewerQueryVariables = Exact<{ [key: string]: never }>;
 
 export type ViewerQuery = {
   viewer: { id: string; login: string; createdAt: string };
-  rateLimit: {
-    cost: number;
-    used: number;
-    remaining: number;
-    resetAt: string;
-  } | null;
+  rateLimit: { cost: number } | null;
 };
 
 export const ViewerDocument = graphqlDocument<
@@ -27,8 +22,5 @@ query viewer {
   }
   rateLimit {
     cost
-    used
-    remaining
-    resetAt
   }
 }`);

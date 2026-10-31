@@ -3,9 +3,11 @@
  */
 const logger: {
   log: (...args: Array<unknown>) => void;
+  warn: (...args: Array<unknown>) => void;
   error: (...args: Array<unknown>) => void;
 } = {
   log: console.log,
+  warn: console.warn,
   error: console.error,
 };
 

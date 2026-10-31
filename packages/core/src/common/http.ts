@@ -17,10 +17,16 @@ type GraphQLResponse<TResult> = AxiosResponse<{
   errors?: Array<{ type?: string; message?: string }>;
 }>;
 
+/** Per-request options of a fetcher. */
+interface FetcherOptions {
+  /** Aborts the request, e.g. `AbortSignal.timeout(…)`. */
+  signal?: AbortSignal;
+}
+
 /**
  * @param document Generated query document.
  * @param scheme `Authorization` scheme for the token.
- * @returns A fetcher `retryer` can drive.
+ * @returns A fetcher `retryer` and `userTokenRetryer` can drive.
  */
 const createGraphQLFetcher = <TResult, TVariables>(
   document: GraphQLDocument<TResult, TVariables>,
@@ -29,6 +35,8 @@ const createGraphQLFetcher = <TResult, TVariables>(
   return (
     variables: TVariables,
     token: string,
+    _retriesForTests?: number,
+    options: FetcherOptions = {},
   ): Promise<GraphQLResponse<TResult>> => {
     return axios({
       url: GITHUB_GRAPHQL_API,
@@ -38,6 +46,7 @@ const createGraphQLFetcher = <TResult, TVariables>(
         Authorization: `${scheme} ${token}`,
       },
       data: { query: document.text, variables },
+      ...(options.signal && { signal: options.signal }),
     });
   };
 };
@@ -80,4 +89,4 @@ const request = (
 };
 
 export { createGraphQLFetcher, request };
-export type { GraphQLResponse };
+export type { FetcherOptions, GraphQLResponse };
