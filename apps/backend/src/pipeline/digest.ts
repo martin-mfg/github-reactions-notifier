@@ -17,7 +17,7 @@ interface DigestPayload {
 const OPEN_DIGEST = JSON.stringify({ digest: true, state: "open" });
 
 /** One reaction a digest reports, with the item it is on. */
-interface DigestReaction {
+export interface DigestReaction {
   nodeId: string;
   type: ContentType;
   repoFullName: string;

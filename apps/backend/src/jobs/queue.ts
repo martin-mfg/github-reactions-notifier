@@ -249,8 +249,8 @@ export const releaseSync = async (
 };
 
 /**
- * Releases a `deliver` job for a retry. It keeps its attempts: any attempt after the first
- * is ambiguous (§12).
+ * Releases a `deliver` job for a retry. It keeps its attempts, which drive its backoff
+ * (§12).
  *
  * @param client Client inside the job's last transaction.
  * @param lease The job's lease.
@@ -291,7 +291,7 @@ export const deleteJob = async (
 /**
  * Releases leases not renewed for `leaseReapAgeSeconds`, behind an exponential backoff
  * (§7.3, step 5). Runs on every cron run. A rescued `deliver` job's next attempt counts as
- * ambiguous (§12), since it keeps its attempts.
+ * ambiguous (§12) if it had attempted a post.
  *
  * @param db Pool to run on.
  * @param config Tunables for the reap age and backoff.

@@ -34,6 +34,8 @@ The requirements live in [reactions-notifier-m1-requirements.md](reactions-notif
 | `sync/schedule.ts`         | Picks and runs a `sync` job's next task by score (§9.1), or releases the job until one is due.                                                               |
 | `inbox/opening.ts`         | Renders the issue that opens a user's inbox.                                                                                                                 |
 | `inbox/notices.ts`         | Renders one-off notices, such as FR-17's.                                                                                                                    |
+| `inbox/digestBody.ts`      | Renders a digest's comment (FR-15): grouped by item and emoji, sanitised (§11), truncated at 65,536 characters.                                              |
+| `inbox/dispatcher.ts`      | Works one leased `deliver` job (§11, §12): the marker check after an ambiguous attempt, the bucket token, the post, and settling its failure.                |
 
 `@grn/core` is meant to be shared with github-stats-extended later, so its files keep the source repo's layout:
 
@@ -67,15 +69,17 @@ Tests need no database server: they apply `schema.sql` to an in-process Postgres
 
 ### Environment variables (backend)
 
-| Variable               | Purpose                                                                                                                                                                                 |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POSTGRES_URL`         | Postgres connection string.                                                                                                                                                             |
-| `OAUTH_CLIENT_ID`      | GRN's own GitHub OAuth App.                                                                                                                                                             |
-| `OAUTH_CLIENT_SECRET`  | Its client secret.                                                                                                                                                                      |
-| `OAUTH_REDIRECT_URI`   | Its callback URL: `<site>/api/oauth/callback`.                                                                                                                                          |
-| `TOKEN_ENCRYPTION_KEY` | Encrypts stored user tokens (AES-256-GCM): 32 bytes as hex or base64. Comma-separate several keys to rotate; the first encrypts, all decrypt. Generate one with `openssl rand -hex 32`. |
-| `PAT_1`, `PAT_2`, ...  | Personal access tokens for the GitHub client.                                                                                                                                           |
-| `PORT`                 | Port to listen on: 80 in Docker, else 9000.                                                                                                                                             |
+| Variable                | Purpose                                                                                                                                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POSTGRES_URL`          | Postgres connection string.                                                                                                                                                             |
+| `OAUTH_CLIENT_ID`       | GRN's own GitHub OAuth App.                                                                                                                                                             |
+| `OAUTH_CLIENT_SECRET`   | Its client secret.                                                                                                                                                                      |
+| `OAUTH_REDIRECT_URI`    | Its callback URL: `<site>/api/oauth/callback`.                                                                                                                                          |
+| `TOKEN_ENCRYPTION_KEY`  | Encrypts stored user tokens (AES-256-GCM): 32 bytes as hex or base64. Comma-separate several keys to rotate; the first encrypts, all decrypt. Generate one with `openssl rand -hex 32`. |
+| `PAT_1`, `PAT_2`, ...   | Personal access tokens for the GitHub client.                                                                                                                                           |
+| `MACHINE_ACCOUNT_TOKEN` | Token of the machine account that opens the inboxes and posts every comment (§11). It needs write access to issues in `INBOX_REPO`.                                                     |
+| `INBOX_REPO`            | The repo holding the inbox issues, as `owner/repo`.                                                                                                                                     |
+| `PORT`                  | Port to listen on: 80 in Docker, else 9000.                                                                                                                                             |
 
 ## Commands
 

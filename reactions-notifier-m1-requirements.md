@@ -1054,6 +1054,46 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    *Accept:* tests show an ambiguous failure never double-posts, a pause blocks all `deliver`
    jobs, a permanent failure deletes all of the user's jobs (including `sync`), the rendering
    sanitises `@`, `#123`, and links, and an oversized body is truncated at 65,536 characters.
+   *Status:* done. The dispatcher is `runDeliver` in `apps/backend/src/inbox/dispatcher.ts`; it
+   works one leased `deliver` job. The digest's body is `renderDigestBody` in
+   `apps/backend/src/inbox/digestBody.ts`. The machine account comes from
+   `MACHINE_ACCOUNT_TOKEN` and `INBOX_REPO` (`owner/repo`). §12's backoff is
+   `dispatchBackoffBaseSeconds` × 2^min(attempts − 1, `dispatchMaxExponent`), 60 s × 2^≤8.
+   Decided in step 9:
+   - An attempt is **ambiguous** if an earlier one may have posted, not merely if it is not the
+     first. The token-taking transaction stamps `payload.attempted_at` (Postgres' epoch
+     seconds) right before the first post, and later posts keep it. An attempt that finds it
+     checks for the marker first, so a rescue or failure before any post skips the check.
+   - The marker check is a read, so it takes no bucket token. It reads one page of 100.
+     For a comment, it reads the target issue's comments since `attempted_at − CLOCK_MARGIN`.
+     For an opening, it reads the inbox repo's 100 newest issues, skipping pull requests.
+     A failed check is settled by §12's table, like a failed post.
+   - A rate limit with neither header also pauses the whole dispatcher, for the job's backoff,
+     since secondary limits are account-wide. The job keeps its `run_at`, as in every pause.
+     `classifyWrite` already alerts on every rate limit (step 4). A transient failure alerts on
+     every attempt (`dispatchAlertAttempts` = 1).
+   - A missing channel, a missing or malformed target, or a malformed payload is a bug, not
+     §12's permanent row. `runDeliver` throws and keeps the lease, so the reaper's alerts
+     surface it.
+   - An opening whose channel already has a target is deleted with a warning, without a post.
+   - An opening whose response carries no issue number is transient. The next attempt's marker
+     check finds the issue and points the channel at it.
+   - Digest format (FR-15): one list item per item, in order of first reaction. Each reads
+     "N new 👍 and M new 🎉 on your issue | your pull request | your comment on *[title](url)*
+     in *repo*", with one sub-item per emoji listing who reacted.
+     - At most 10 logins are named per emoji; the rest are counted ("and 3 others").
+     - Each login links to its profile on `github.com` and has a zero-width space after its
+       `@`, the user's own included (FR-12), so it mentions no one.
+     - Item links go through `redirect.github.com`, so they create no "mentioned this" event.
+       A non-`https` URL is not linked.
+   - Quoted text (titles, repo names, unknown emoji names) goes on one line. Its github.com
+     URLs go through `redirect.github.com`. A zero-width space follows every `@`, and every
+     `#` or `GH-` before a digit. Every ASCII punctuation character is backslash-escaped, so no
+     Markdown or HTML survives.
+   - Truncation drops whole items from the end and appends "…and N more items" before the
+     marker. The 65,536-character limit is counted in UTF-16 code units.
+   - `WriteContext.kind` carries the message kind: `opening`, `digest` or `one-off`.
+   - No worker calls `claimJob` and `runDeliver` yet; that is step 10.
 10. **Cron wiring, worker loop, observability, health endpoint, and an end-to-end run** on one
     real account: the worker's `IDLE_WAIT` loop and its exit before `maxDuration`, and the
     NFR-7 logs and alarms.

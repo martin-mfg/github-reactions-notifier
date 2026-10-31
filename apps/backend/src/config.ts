@@ -13,6 +13,14 @@ export interface Config {
   dispatchRatePerHour: number;
   /** Most tokens the bucket holds, i.e. the largest burst of writes (§12). */
   dispatchCapacity: number;
+  /**
+   * After a `5xx`, network error, timeout, or a rate limit that names no wait, a `deliver` job
+   * waits `dispatchBackoffBaseSeconds × 2^min(attempts − 1, dispatchMaxExponent)` (§12).
+   */
+  dispatchBackoffBaseSeconds: number;
+  dispatchMaxExponent: number;
+  /** A failed write of a `deliver` job with at least this many attempts raises an alert. */
+  dispatchAlertAttempts: number;
   /** Leases not renewed for this long are reaped (§7.3). */
   leaseReapAgeSeconds: number;
   /** A reaped job waits `reaperBackoffBaseSeconds × 2^min(attempts, reaperMaxExponent)`. */
@@ -62,6 +70,9 @@ export const defaultConfig: Config = {
   budgetReserve: 500,
   dispatchRatePerHour: 480,
   dispatchCapacity: 10,
+  dispatchBackoffBaseSeconds: 60,
+  dispatchMaxExponent: 8,
+  dispatchAlertAttempts: 1,
   leaseReapAgeSeconds: 15 * 60,
   reaperBackoffBaseSeconds: 60,
   reaperMaxExponent: 8,
