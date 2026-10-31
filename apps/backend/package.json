@@ -12,10 +12,12 @@
     "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
     "@types/express": "^5.0.6",
     "vitest": "catalog:default"
   },
   "dependencies": {
+    "@grn/core": "workspace:*",
     "express": "5.2.1"
   }
 }

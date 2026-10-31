@@ -759,7 +759,8 @@ For a returning user, the sign-in instead updates the token and login, sets
 | Discovery page | 100 per pass | One page per run; no cursors |
 | Thread scan batch | ~50 threads | |
 | Digest batching window | 3 min | |
-| Dispatch rate | 480/h | Bucket capacity |
+| Dispatch rate | 480/h | Bucket refill rate |
+| Dispatch bucket capacity | 10 tokens | Largest burst of writes |
 | Request timeout | 2 min | Shorten after observing real response times |
 | Lease reap age | 15 min | Shorten after observing real commit gaps |
 | Reaper backoff | 1 min × 2^min(attempts, 8) | |
@@ -807,6 +808,19 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    *Accept:* tests cover lease loss, reaping, the round-robin order, the one-deliver-lease
    rule (a `23505` on a claim means "nothing to claim"), and that only the opening job is due
    while the channel's `target IS NULL`.
+   *Status:* done. The schema is `packages/core/sql/schema.sql`. The queue is in
+   `apps/backend/src/jobs/queue.ts`. Its tests run against PGlite (in-process Postgres), so
+   they need no database server. Decided in step 2:
+   - The `deliver` claim orders strictly by `run_at` (§12). The full doc's "a new user's inbox
+     first" (§6.8) is not implemented.
+   - The bucket capacity is configurable, separate from the 480/h rate, and defaults to 10
+     tokens (§14).
+   - An opening job is recognised by the `title` in its payload.
+   - A missing `rate_limit_state` row counts as a budget with room.
+   - Per-user tables reference `users` with `ON DELETE CASCADE`. `reaction_events` references
+     `content`. `tracked_content` and `content_sources` reference `content`, and
+     `reaction_notifications` references `reaction_events`, all without `ON DELETE` actions
+     and without extra `node_id` indexes.
 3. **OAuth, token service, and deletion:** sign-in, FR-2a, NFR-3 encryption, the signup
    transaction, the returning-user sign-in, and FR-3 deletion.
    *Accept:* tests show a non-empty scope is rejected and the grant deleted (without looping),

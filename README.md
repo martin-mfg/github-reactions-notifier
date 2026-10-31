@@ -8,9 +8,17 @@ The requirements live in [reactions-notifier-m1-requirements.md](reactions-notif
 
 | Path            | Contents                                                                                                           |
 | --------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `apps/backend`  | Express server (`express.ts`) serving the handlers under `api/` and the built frontend.                            |
+| `apps/backend`  | Express server (`express.ts`) serving the handlers under `api/` and the built frontend. GRN's own logic: `src/`.   |
 | `apps/frontend` | Static Astro site (React + Starlight docs).                                                                        |
 | `packages/core` | Code adapted from [github-stats-extended](https://github.com/stats-organization/github-stats-extended), see below. |
+
+`apps/backend/src` holds GRN-specific code:
+
+| Path            | Contents                                                                                      |
+| --------------- | --------------------------------------------------------------------------------------------- |
+| `config.ts`     | Tunables from requirements §14, with their defaults.                                          |
+| `db.ts`         | The minimal database interface GRN's code runs on (`pg`'s `Pool` satisfies it); transactions. |
+| `jobs/queue.ts` | The Postgres job queue: due rules, claim, lease renewal and fencing, release, and the reaper. |
 
 `@grn/core` is meant to be shared with github-stats-extended later, so its files keep the source repo's layout:
 
@@ -39,6 +47,8 @@ The schema is applied by hand, not by the app. Run it against an empty database:
 ```sh
 psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f packages/core/sql/schema.sql
 ```
+
+Tests need no database server: they apply `schema.sql` to an in-process Postgres ([PGlite](https://pglite.dev)).
 
 ### Environment variables (backend)
 
