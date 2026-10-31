@@ -15,6 +15,7 @@ import { releaseSync, withLease } from "../jobs/queue.ts";
 import type { Lease } from "../jobs/queue.ts";
 
 import { checkBudget, storeRateLimit } from "./budget.ts";
+import { checkClockOffset } from "./clock.ts";
 
 /** A leased `sync` job and the token it reads with. */
 export interface SyncSession {
@@ -77,7 +78,8 @@ const describe = (session: SyncSession, details?: ResponseDetails) => ({
  * 1. Evaluates the budget guard. Without room, nothing is sent.
  * 2. Sends the query exactly once, aborted after the request timeout.
  * 3. Stores the response's `graphql` rate-limit headers, fenced by the job's lease.
- * 4. Logs the query's `rateLimit.cost` and alarms above `COST_ALARM`.
+ * 4. Logs the query's `rateLimit.cost` and alarms above `COST_ALARM`. Logs the offset of the
+ *    response's `Date` header (NFR-7).
  *
  * Every response no rule covers is logged as a warning and becomes a transient failure.
  *
@@ -105,6 +107,7 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
   const outcome = await userTokenRetryer(fetcher, variables, session.token, {
     timeoutMs: config.requestTimeoutSeconds * 1000,
   });
+  await checkClockOffset(db, outcome.details.date, describe(session), config);
   const headers = outcome.details.rateLimit;
   if (headers) {
     await withLease(db, lease, (client) =>

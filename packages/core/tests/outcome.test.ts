@@ -197,6 +197,30 @@ describe("classifyResponse", () => {
       details: { status, message, errorTypes: [] },
     });
   });
+
+  it("reads the date header, on any status", () => {
+    const date = "Thu, 01 Jan 2026 00:00:00 GMT";
+    expect(
+      classifyResponse({ status: 502, headers: { date }, data: {} }, "rest")
+        .details.date,
+    ).toEqual(new Date(reset * 1000));
+    expect(
+      classifyResponse(
+        { status: 200, headers: new AxiosHeaders({ Date: date }), data: {} },
+        "rest",
+      ).details.date,
+    ).toEqual(new Date(reset * 1000));
+    expect(
+      classifyResponse(
+        { status: 200, headers: { date: "yesterday" }, data: {} },
+        "rest",
+      ).details.date,
+    ).toBeNull();
+    expect(
+      classifyResponse({ status: 200, headers: {}, data: {} }, "rest").details
+        .date,
+    ).toBeNull();
+  });
 });
 
 describe("classifyError", () => {
@@ -219,6 +243,7 @@ describe("classifyError", () => {
         errorTypes: [],
         message: "socket hang up",
         rateLimit: null,
+        date: null,
       },
     });
     expect(classifyError(new Error("canceled"), "rest", true)).toMatchObject({

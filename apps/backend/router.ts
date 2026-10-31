@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 
+import { default as cron } from "./api/cron.ts";
 import { default as deleteAccount } from "./api/delete-account.ts";
 import { default as login } from "./api/login.ts";
 import { default as oauthCallback } from "./api/oauth/callback.ts";
@@ -20,6 +21,9 @@ export default async (req: Request, res: Response): Promise<void> => {
       break;
     case "/api/status/up":
       await statusUp(req, res);
+      break;
+    case "/api/cron":
+      await cron(req, res);
       break;
     default:
       res.statusCode = 404;

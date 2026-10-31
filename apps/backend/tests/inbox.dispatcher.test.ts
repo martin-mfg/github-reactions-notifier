@@ -67,6 +67,7 @@ const details = (status: number | null, message = "") => ({
   errorTypes: [],
   message,
   rateLimit: null,
+  date: null,
 });
 
 const ok = (data: unknown) => ({
@@ -224,6 +225,30 @@ describe("runDeliver: opening", () => {
     const bucket = await pausedFor();
     expect(bucket?.level).toBeCloseTo(9, 0);
     expect(bucket?.paused_for).toBeCloseTo(0, 0);
+  });
+
+  it("checks GitHub's clock on its responses", async () => {
+    const user = await signUp("alice");
+    const github = fakeGitHub(() => ({
+      ...ok({ number: 42 }),
+      details: { ...details(201), date: new Date(Date.now() + 60_000) },
+    }));
+    const lease = await claim();
+
+    expect(
+      await runDeliver({
+        db,
+        lease,
+        machine,
+        send: github.send,
+        config: { ...defaultConfig, clockCheckIntervalSeconds: 0 },
+      }),
+    ).toBe("posted");
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "ALERT: GitHub's clock is offset above the alarm",
+      expect.objectContaining({ job: lease.id, user }),
+    );
   });
 
   it("drops an opening whose inbox is already open", async () => {

@@ -1099,3 +1099,51 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
     NFR-7 logs and alarms.
     *Accept:* the end-to-end run opens the inbox, notifies a new reaction exactly once and no
     pre-existing one, and the health endpoint responds. Then take §15's measurements.
+    *Status:* done, except the end-to-end run and §15's measurements, which were deferred.
+    The scheduler is `/api/cron` (`apps/backend/src/cron.ts`), scheduled every minute in the
+    root `vercel.json`. The worker loop is `runWorker` in `apps/backend/src/worker/worker.ts`.
+    The clock-offset check is `checkClockOffset` in `apps/backend/src/github/clock.ts`. The
+    health endpoint is `apps/backend/api/status/up.ts`. The new tunables are `workersPerCron`
+    (1), `idleWaitSeconds` (60), `maxDurationSeconds` (800-10=790), and `clockOffsetAlarmSeconds` (2).
+    Decided in step 10:
+    - The cron run hosts its workers: it reaps, then runs `workersPerCron` worker loops in its
+      own invocation and answers once they all exit. It makes no request to GRN's own origin.
+      `[WHY]` Vercel may pause an instance once it has responded, so work after the response is
+      unsafe. Cron invocations overlap, so this still keeps about 10 workers alive. Vercel's
+      cron is best-effort (it may skip or repeat a run and never retries one); leases and the
+      reaper make both harmless.
+    - `/api/cron` fails closed. Without `CRON_SECRET` it answers `500`. A request whose
+      `Authorization` header is not `Bearer <CRON_SECRET>` gets `401` (constant-time compare).
+      A failed reap is logged, and the workers still run.
+    - The worker's two claims take turns going first, starting with `deliver`: after running
+      one kind, it tries the other kind first. A claim of either kind that finds nothing falls
+      through to the other.
+    - The worker stops claiming at `maxDurationSeconds` − 2 × `requestTimeoutSeconds` (550 s)
+      after the invocation started. It skips any idle wait that would end past that point, and
+      exits instead.
+    - A job that throws keeps its lease. The worker logs an error and goes on; the reaper
+      retries it and alerts on repeats (§7.3). A lost lease is logged as a warning. A failed
+      claim ends the invocation. The worker never throws.
+    - A `sync` job whose token can't be decrypted is released. `loadToken` has already set the
+      token `invalid`, so the job is no longer due.
+    - Each worker logs its per-stage counters once, as `worker finished`: claims per kind, sync
+      tasks per kind, delivery results, lost leases, errors, idle waits, and why it exited.
+    - The `Date` header's offset from Postgres' `clock_timestamp()` is checked on GitHub
+      responses, reads and writes, failed or not, at most once per `clockCheckIntervalSeconds`
+      (60 s) per process. The offset belongs to the two clocks, not to a request, and drifts
+      slowly. Each check costs a database round trip and a log line, so checking every
+      response would be wasteful. Concurrent responses don't check twice. A response without
+      a `Date` header doesn't count, and neither does a failed check, so the next response
+      retries. The header has whole seconds, so its second's midpoint is compared. The offset
+      is accurate to about ±0.5 s plus the response's latency. A failed check logs a warning
+      and never fails the request.
+    - The health endpoint reports whether `SELECT 1` succeeds within 5 s, in the same three
+      formats as github-stats-extended, with `Cache-Control: no-store`. Unlike
+      github-stats-extended, it answers `503` while down, so monitors need no keyword match.
+      The `shields` format still answers `200`, since shields.io renders only a `200`'s badge.
+    - Not yet verified on Vercel; check these in the end-to-end run:
+      - how to set `maxDuration` to 800 s for a container-runtime project (README: Project
+        Settings → Functions);
+      - whether Vercel Cron triggers a container-runtime project;
+      - how a scale-in or redeploy ends a running cron invocation. The reaper covers any job
+        cut off mid-task.

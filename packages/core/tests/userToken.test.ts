@@ -58,6 +58,7 @@ describe("userTokenRetryer", () => {
           remaining: 4999,
           resetAt: new Date(reset * 1000),
         },
+        date: null,
       },
     });
     scope.done();

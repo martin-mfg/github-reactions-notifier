@@ -28,6 +28,7 @@ const details = (status: number | null, message = ""): ResponseDetails => ({
   errorTypes: [],
   message,
   rateLimit: null,
+  date: null,
 });
 
 const failed = (

@@ -4,6 +4,7 @@ import type { GitHubOutcome, MutationRequest } from "@grn/core";
 import { defaultConfig } from "../config.ts";
 import type { Config } from "../config.ts";
 import type { Database, Queryable } from "../db.ts";
+import { checkClockOffset } from "../github/clock.ts";
 import { sendWrite } from "../github/writes.ts";
 import type { WriteContext, WriteResult } from "../github/writes.ts";
 import { deleteJob, releaseDeliver, withLease } from "../jobs/queue.ts";
@@ -45,6 +46,28 @@ export const machineAccountFromEnv = (
 
 /** The request path; replaced in tests. */
 type Send = <T>(request: MutationRequest) => Promise<GitHubOutcome<T>>;
+
+/**
+ * @param session The leased job.
+ * @param context The write, for logs.
+ * @returns The session's request path, checking GitHub's clock offset on its responses (NFR-7).
+ */
+const sendWithClockCheck = (
+  session: DeliverSession,
+  context: WriteContext,
+): Send => {
+  const send: Send = session.send ?? mutationRequest;
+  return async <T>(request: MutationRequest) => {
+    const outcome = await send<T>(request);
+    await checkClockOffset(
+      session.db,
+      outcome.details.date,
+      { ...context },
+      session.config,
+    );
+    return outcome;
+  };
+};
 
 /** A leased `deliver` job and what it posts with. */
 export interface DeliverSession {
@@ -195,7 +218,7 @@ const findMarker = async (
     { method: "GET", path, token: machine.token },
     context,
     config,
-    session.send ?? mutationRequest,
+    sendWithClockCheck(session, context),
   );
   if (result.kind !== "ok") {
     return result;
@@ -451,7 +474,7 @@ export const runDeliver = async (
         },
     context,
     config,
-    session.send ?? mutationRequest,
+    sendWithClockCheck(session, context),
   );
   return result.kind === "ok"
     ? finish(result.data, "posted")

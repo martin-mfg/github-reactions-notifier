@@ -28,6 +28,8 @@ export interface ResponseDetails {
   message: string;
   /** `null` unless the response carried the complete set of headers. */
   rateLimit: RateLimitHeaders | null;
+  /** The `date` header, on GitHub's clock (whole seconds), or `null` if there is none. */
+  date: Date | null;
 }
 
 /**
@@ -140,6 +142,17 @@ const parseRetryAfter = (headers: unknown): number | null => {
     : Math.max(0, Math.ceil((date - Date.now()) / 1000));
 };
 
+/**
+ * @param headers The response's headers.
+ * @returns The `date` header, on GitHub's clock (whole seconds), or `null` if absent or
+ *   unparseable.
+ */
+const parseDate = (headers: unknown): Date | null => {
+  const value = headerValue(headers, "date");
+  const date = value === null ? Number.NaN : Date.parse(value);
+  return Number.isNaN(date) ? null : new Date(date);
+};
+
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -182,6 +195,7 @@ export const classifyResponse = <T>(
         .flatMap((error) => (error.message ? [error.message] : []))
         .join("; ") || bodyMessage,
     rateLimit: parseRateLimitHeaders(headers),
+    date: parseDate(headers),
   };
   const isSuccess = status >= 200 && status < 300;
 
@@ -263,6 +277,7 @@ export const classifyError = <T>(
           ? error.message
           : String(error),
       rateLimit: null,
+      date: null,
     },
   };
 };

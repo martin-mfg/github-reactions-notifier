@@ -180,6 +180,30 @@ describe("runQuery", () => {
     );
   });
 
+  it("checks GitHub's clock on responses, failed ones too", async () => {
+    const session = {
+      ...(await leasedSession()),
+      config: { ...defaultConfig, clockCheckIntervalSeconds: 0 },
+    };
+    const ahead = new Date(Date.now() + 60_000).toUTCString();
+
+    await runQuery(
+      session,
+      resolving({ data: viewer(1) }, { ...rateLimitHeaders(10), date: ahead }),
+      {},
+    );
+    await runQuery(session, rejecting(502, "", { date: ahead }), {});
+
+    const alerts = vi
+      .mocked(logger.error)
+      .mock.calls.filter(
+        ([message]) =>
+          message === "ALERT: GitHub's clock is offset above the alarm",
+      );
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]?.[1]).toMatchObject({ job: session.lease.id });
+  });
+
   it("sends nothing while the guard leaves no room", async () => {
     const session = await leasedSession();
     await db.query(

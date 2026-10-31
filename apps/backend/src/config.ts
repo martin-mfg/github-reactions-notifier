@@ -62,6 +62,22 @@ export interface Config {
    * long after its own `run_at` (§10).
    */
   digestWindowSeconds: number;
+  /** How many worker loops each cron run starts (§7.1). */
+  workersPerCron: number;
+  /** `IDLE_WAIT`: an idle worker waits this long, holding no lease, before claiming again. */
+  idleWaitSeconds: number;
+  /**
+   * The function's `maxDuration` (§7.1). Workers claim no job within two request timeouts of
+   * it. Must match the deployment's setting.
+   */
+  maxDurationSeconds: number;
+  /** An offset of GitHub's `Date` header from Postgres' clock above this alerts (NFR-7). */
+  clockOffsetAlarmSeconds: number;
+  /**
+   * Each process checks that offset at most once per this long. `[WHY]` It belongs to the two
+   * clocks, not to a request, and drifts slowly; each check costs a query and a log line.
+   */
+  clockCheckIntervalSeconds: number;
 }
 
 export const defaultConfig: Config = {
@@ -88,4 +104,9 @@ export const defaultConfig: Config = {
   discoveryWeight: 2,
   probeBatch: 50,
   digestWindowSeconds: 3 * 60,
+  workersPerCron: 1,
+  idleWaitSeconds: 60,
+  maxDurationSeconds: 790,
+  clockOffsetAlarmSeconds: 2,
+  clockCheckIntervalSeconds: 60,
 };

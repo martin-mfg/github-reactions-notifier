@@ -36,6 +36,9 @@ The requirements live in [reactions-notifier-m1-requirements.md](reactions-notif
 | `inbox/notices.ts`         | Renders one-off notices, such as FR-17's.                                                                                                                    |
 | `inbox/digestBody.ts`      | Renders a digest's comment (FR-15): grouped by item and emoji, sanitised (§11), truncated at 65,536 characters.                                              |
 | `inbox/dispatcher.ts`      | Works one leased `deliver` job (§11, §12): the marker check after an ambiguous attempt, the bucket token, the post, and settling its failure.                |
+| `github/clock.ts`          | Logs the offset of GitHub's `Date` header from Postgres' clock at most once a minute, and alerts above 2 s (NFR-7).                                          |
+| `worker/worker.ts`         | The worker loop (§7.1): claim, run one task or `deliver` job, release; wait `IDLE_WAIT` when idle; stop claiming before `maxDuration`; per-stage counters.   |
+| `cron.ts`                  | The scheduler behind `/api/cron` (§7.1): checks `CRON_SECRET`, reaps expired leases, and runs the worker loops.                                              |
 
 `@grn/core` is meant to be shared with github-stats-extended later, so its files keep the source repo's layout:
 
@@ -79,6 +82,7 @@ Tests need no database server: they apply `schema.sql` to an in-process Postgres
 | `PAT_1`, `PAT_2`, ...   | Personal access tokens for the GitHub client.                                                                                                                                           |
 | `MACHINE_ACCOUNT_TOKEN` | Token of the machine account that opens the inboxes and posts every comment (§11). It needs write access to issues in `INBOX_REPO`.                                                     |
 | `INBOX_REPO`            | The repo holding the inbox issues, as `owner/repo`.                                                                                                                                     |
+| `CRON_SECRET`           | Authorizes calls to `/api/cron`, sent as `Authorization: Bearer <secret>`. Without it, every call is refused. Vercel Cron sends it automatically.                                       |
 | `PORT`                  | Port to listen on: 80 in Docker, else 9000.                                                                                                                                             |
 
 ## Commands
@@ -109,3 +113,15 @@ docker run -d -p 9000:80 --env-file apps/backend/.env ghcr.io/martin-mfg/github-
 ```
 
 The instance is then available at `http://localhost:9000`. To build the image yourself, run `docker build -f Dockerfile.vercel .` from the repository root.
+
+### Scheduler
+
+The workers run inside `/api/cron`, which must be called every minute (§7.1). Each call reaps expired leases, then runs the worker loops until shortly before `maxDurationSeconds` (790 s, see `src/config.ts`), and only then responds.
+On Vercel, `vercel.json` schedules it; set the project's maximum function duration (Project Settings → Functions) to 800 s to match.
+Elsewhere, call it from any scheduler, e.g. a crontab entry:
+
+```sh
+* * * * * curl -fsS -m 900 -H "Authorization: Bearer $CRON_SECRET" http://localhost:9000/api/cron > /dev/null
+```
+
+`/api/status/up` reports whether the backend reaches its database (`?type=json` or `?type=shields` for other formats). While it doesn't, it answers `503`, except for `?type=shields`.
