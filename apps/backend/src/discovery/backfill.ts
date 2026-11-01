@@ -11,6 +11,7 @@ import type {
 } from "@grn/core";
 
 import type { Queryable } from "../db.ts";
+import { validBackfill } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
@@ -235,7 +236,10 @@ export const runBackfill = async (
         end: window.window_end,
       }),
     },
-    { isExpectedError: (error) => hintErrorIndex(error) !== undefined },
+    {
+      isExpectedError: (error) => hintErrorIndex(error) !== undefined,
+      validate: validBackfill,
+    },
   );
   if (!result.ok) {
     await settleSyncFailure(session, result.failure);

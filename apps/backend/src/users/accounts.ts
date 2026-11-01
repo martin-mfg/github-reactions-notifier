@@ -28,6 +28,8 @@ interface SignInOptions {
 /** M1's one category of the `authored` source, its types, and one pass per type (§2, §9.2). */
 const CATEGORY = "issue";
 const CONTENT_TYPES = ["Issue", "PullRequest", "IssueComment"];
+// Search dates belong to parent threads, which can predate the comment author's account.
+const BACKFILL_START = "1970-01-01T00:00:00Z";
 
 /**
  * The signup transaction's inserts after the user row (§13): the subscription, its `issue`
@@ -70,7 +72,7 @@ const insertSubscription = async (
   await client.query(
     `INSERT INTO backfill_windows (category_id, window_start, window_end)
      VALUES ($1, $2::timestamptz, now())`,
-    [categoryId, identity.createdAt],
+    [categoryId, BACKFILL_START],
   );
   await client.query("INSERT INTO jobs (kind, user_id) VALUES ('sync', $1)", [
     identity.id,

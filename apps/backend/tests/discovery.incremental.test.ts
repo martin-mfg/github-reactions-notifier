@@ -16,6 +16,7 @@ import {
   vi,
 } from "vitest";
 
+import { defaultConfig } from "../src/config.ts";
 import type { Database } from "../src/db.ts";
 import { runIncrementalDiscovery } from "../src/discovery/incremental.ts";
 import type { SyncSession } from "../src/github/syncClient.ts";
@@ -232,6 +233,82 @@ const ageCategory = async () => {
 };
 
 describe("runIncrementalDiscovery", () => {
+  it.each([
+    [
+      "empty data",
+      (data: AuthoredDiscoveryQuery) => Reflect.deleteProperty(data, "viewer"),
+    ],
+    [
+      "missing connection",
+      (data: AuthoredDiscoveryQuery) =>
+        Reflect.deleteProperty(data.viewer, "issues"),
+    ],
+    [
+      "missing nodes",
+      (data: AuthoredDiscoveryQuery) =>
+        Reflect.deleteProperty(data.viewer.issueComments, "nodes"),
+    ],
+    [
+      "missing pageInfo",
+      (data: AuthoredDiscoveryQuery) =>
+        Reflect.deleteProperty(data.viewer.pullRequests, "pageInfo"),
+    ],
+    [
+      "malformed item",
+      (data: AuthoredDiscoveryQuery) =>
+        Reflect.set(data.viewer.issues, "nodes", [{ __typename: "Issue" }]),
+    ],
+    [
+      "missing sort key",
+      (data: AuthoredDiscoveryQuery) =>
+        Reflect.set(data.viewer.issueComments, "nodes", [
+          { ...comment("C_1", at(1)), updatedAt: undefined },
+        ]),
+    ],
+  ])("retries %s without advancing discovery", async (_name, corrupt) => {
+    const { session, categoryId } = await setUp();
+    await ageCategory();
+    const before = await watermarks();
+    const fetcher: Fetcher = async (...args) => {
+      const response = await resolving({ issues: [issue("I_1", at(1))] })(
+        ...args,
+      );
+      const data = response.data.data;
+      if (!data) {
+        throw new Error("test response has no data");
+      }
+      corrupt(data);
+      if (_name === "empty data") {
+        Reflect.deleteProperty(data, "rateLimit");
+      }
+      return response;
+    };
+
+    expect(await runIncrementalDiscovery(session, categoryId, fetcher)).toEqual(
+      {
+        ok: false,
+        failure: { kind: "transient" },
+      },
+    );
+    expect(await watermarks()).toEqual(before);
+    expect(await trackedIds()).toEqual([]);
+    expect((await category())?.checked_ago).toBeGreaterThanOrEqual(3600);
+    const { rows } = await db.query<{
+      locked_by: string | null;
+      due_in: number;
+    }>(
+      `SELECT locked_by, extract(epoch FROM run_at - now())::float8 AS due_in
+       FROM jobs WHERE id = $1`,
+      [session.lease.id],
+    );
+    expect(rows[0]?.locked_by).toBeNull();
+    expect(rows[0]?.due_in).toBeCloseTo(defaultConfig.syncRetrySeconds, 0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "unexpected GraphQL response shape",
+      expect.objectContaining({ job: session.lease.id }),
+    );
+  });
+
   it("stores the items at or above each watermark and advances it in the same commit", async () => {
     const { session, categoryId } = await setUp();
     await ageCategory();

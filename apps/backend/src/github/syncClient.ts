@@ -50,6 +50,8 @@ export type QueryResult<T> =
   | { ok: false; failure: SyncFailure };
 
 interface QueryOptions {
+  /** Checks the query-specific fields before callers may commit progress. */
+  validate?: (data: unknown) => boolean;
   /**
    * Accepts GraphQL errors that a rule of §9 covers, such as a missing item's `NOT_FOUND`.
    * Any other error makes the response unexpected (§12).
@@ -117,6 +119,13 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
 
   switch (outcome.kind) {
     case "ok": {
+      if (options.validate && !options.validate(outcome.data)) {
+        logger.warn(
+          "unexpected GraphQL response shape",
+          describe(session, outcome.details),
+        );
+        return { ok: false, failure: { kind: "transient" } };
+      }
       const cost = outcome.data.rateLimit?.cost;
       if (cost === undefined) {
         logger.warn("query returned no rateLimit", describe(session));

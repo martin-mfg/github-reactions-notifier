@@ -10,6 +10,7 @@ import type {
 } from "@grn/core";
 
 import type { Queryable } from "../db.ts";
+import { validIncremental } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
@@ -183,7 +184,14 @@ export const runIncrementalDiscovery = async (
   const { lease } = session;
   const context = taskContext(session, categoryId);
 
-  const result = await runQuery(session, fetcher, {});
+  const result = await runQuery(
+    session,
+    fetcher,
+    {},
+    {
+      validate: validIncremental,
+    },
+  );
   if (!result.ok) {
     await settleSyncFailure(session, result.failure);
     return result;

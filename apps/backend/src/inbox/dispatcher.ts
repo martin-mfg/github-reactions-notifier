@@ -65,6 +65,20 @@ const sendWithClockCheck = (
       { ...context },
       session.config,
     );
+    if (
+      request.method === "POST" &&
+      outcome.kind === "ok" &&
+      outcome.details.status !== 201
+    ) {
+      return {
+        kind: "failed",
+        timedOut: false,
+        details: {
+          ...outcome.details,
+          message: "expected a 201 creation response",
+        },
+      };
+    }
     return outcome;
   };
 };
@@ -116,6 +130,7 @@ interface Listed {
   number?: unknown;
   body?: unknown;
   pull_request?: unknown;
+  user?: { id?: unknown } | null;
 }
 
 type Failure = Exclude<WriteResult<unknown>, { kind: "ok" }>;
@@ -207,6 +222,30 @@ const findMarker = async (
 ): Promise<{ found: Listed | null } | Failure> => {
   const config = session.config ?? defaultConfig;
   const { machine } = session;
+  const identity = await sendWrite<unknown>(
+    { method: "GET", path: "/user", token: machine.token },
+    context,
+    config,
+    sendWithClockCheck(session, context),
+  );
+  if (identity.kind !== "ok") {
+    return identity;
+  }
+  const account = identity.data;
+  if (
+    typeof account !== "object" ||
+    account === null ||
+    !("id" in account) ||
+    typeof account.id !== "number" ||
+    !Number.isSafeInteger(account.id) ||
+    account.id <= 0
+  ) {
+    logger.warn(
+      "unexpected response to the machine account identity check",
+      context,
+    );
+    return { kind: "transient" };
+  }
   const marker = `<!-- grn:${session.lease.id} -->`;
   const path =
     message.kind === "opening"
@@ -223,12 +262,19 @@ const findMarker = async (
   if (result.kind !== "ok") {
     return result;
   }
-  if (!Array.isArray(result.data)) {
+  if (
+    !Array.isArray(result.data) ||
+    result.data.some(
+      (entry: unknown) =>
+        typeof entry !== "object" || entry === null || Array.isArray(entry),
+    )
+  ) {
     logger.warn("unexpected response to the marker check", context);
     return { kind: "transient" };
   }
   const match = (result.data as Array<Listed>).find(
     (entry) =>
+      entry.user?.id === account.id &&
       !(message.kind === "opening" && entry.pull_request) &&
       typeof entry.body === "string" &&
       entry.body.includes(marker),
@@ -422,13 +468,35 @@ export const runDeliver = async (
   };
 
   const finish = async (
-    delivered: Listed,
+    delivered: unknown,
     outcome: "posted" | "found",
   ): Promise<DeliverResult> => {
+    if (
+      typeof delivered !== "object" ||
+      delivered === null ||
+      Array.isArray(delivered)
+    ) {
+      logger.warn("unexpected response: invalid delivery object", context);
+      return settleFailure(session, { kind: "transient" }, context);
+    }
     const issueNumber =
-      typeof delivered.number === "number" && Number.isInteger(delivered.number)
+      "number" in delivered &&
+      typeof delivered.number === "number" &&
+      Number.isSafeInteger(delivered.number) &&
+      delivered.number > 0
         ? delivered.number
         : null;
+    if (
+      outcome === "posted" &&
+      message.kind !== "opening" &&
+      (!("id" in delivered) ||
+        typeof delivered.id !== "number" ||
+        !Number.isSafeInteger(delivered.id) ||
+        delivered.id <= 0)
+    ) {
+      logger.warn("unexpected response: a comment without an id", context);
+      return settleFailure(session, { kind: "transient" }, context);
+    }
     if (message.kind === "opening" && issueNumber === null) {
       // the issue exists, but where? The next attempt's marker check reads its number.
       logger.warn("unexpected response: an issue without a number", context);
@@ -458,7 +526,7 @@ export const runDeliver = async (
   if (!(await takeToken(session))) {
     return "waiting";
   }
-  const result = await sendWrite<Listed>(
+  const result = await sendWrite<unknown>(
     message.kind === "opening"
       ? {
           method: "POST",

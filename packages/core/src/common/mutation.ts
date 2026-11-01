@@ -45,6 +45,7 @@ const mutationRequest = async <T>(
       },
       ...(request.body !== undefined && { data: request.body }),
       signal,
+      maxRedirects: 0,
       // every status is classified, none thrown
       validateStatus: () => true,
     });

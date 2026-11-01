@@ -17,6 +17,7 @@ import type {
 
 import { defaultConfig } from "../config.ts";
 import { present } from "../discovery/results.ts";
+import { validReactionPoll } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
@@ -199,7 +200,10 @@ export const runPoll = async (
     fetchers.probe ??
       createGraphQLFetcher(buildReactionProbeDocument(items.length), "bearer"),
     ids(items),
-    { isExpectedError: isMissingItem },
+    {
+      isExpectedError: isMissingItem,
+      validate: (data) => validReactionPoll(data, items.length),
+    },
   );
   if (!probe.ok) {
     await settleSyncFailure(session, probe.failure);
@@ -247,7 +251,10 @@ export const runPoll = async (
           "bearer",
         ),
       ids(toDrill.map((outcome) => outcome.item)),
-      { isExpectedError: isMissingItem },
+      {
+        isExpectedError: isMissingItem,
+        validate: (data) => validReactionPoll(data, toDrill.length, true),
+      },
     );
     if (!drillDown.ok) {
       await settleSyncFailure(session, drillDown.failure);
@@ -289,6 +296,13 @@ export const runPoll = async (
     })),
   );
   const stored = await withLease(session.db, lease, async (client) => {
+    const { rows: times } = await client.query<{ detected_at: Date }>(
+      "SELECT now() AS detected_at",
+    );
+    const detectedAt = times[0]?.detected_at;
+    if (!detectedAt) {
+      throw new Error("Postgres returned no detection timestamp");
+    }
     // before the watermark moves: it filters by the watermark the drill-down was judged by
     const { rows } = await client.query<NewReaction>(
       `INSERT INTO reaction_events (node_id, reactor_id, emoji, reacted_at, reactor_login)
@@ -330,7 +344,7 @@ export const runPoll = async (
     );
     const queued = await fanOut(client, rows, config);
     await releaseSync(client, lease);
-    return { newReactions: rows, queued };
+    return { newReactions: rows, queued, detectedAt };
   });
   const { newReactions, queued } = stored;
 
@@ -352,9 +366,11 @@ export const runPoll = async (
       },
     );
   }
-  const now = Date.now();
   const latencies = newReactions
-    .map((reaction) => (now - reaction.reacted_at.getTime()) / 1000)
+    .map(
+      (reaction) =>
+        (stored.detectedAt.getTime() - reaction.reacted_at.getTime()) / 1000,
+    )
     .sort((a, b) => a - b);
   logger.log("poll", {
     ...context,

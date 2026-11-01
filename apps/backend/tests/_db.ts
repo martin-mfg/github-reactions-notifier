@@ -11,6 +11,8 @@ const schemaUrl = new URL(
 
 export interface TestDatabase {
   db: Database;
+  /** Executes a SQL script, including explicit transaction boundaries. */
+  exec: (sql: string) => Promise<void>;
   /** Empties every table and resets the dispatch bucket to the schema's initial row. */
   reset: () => Promise<void>;
   close: () => Promise<void>;
@@ -55,6 +57,9 @@ export const createTestDatabase = async (): Promise<TestDatabase> => {
 
   return {
     db: { query, connect },
+    exec: async (sql) => {
+      await pg.exec(sql);
+    },
     reset: async () => {
       await pg.exec(`
         TRUNCATE users, content, dispatch_bucket CASCADE;

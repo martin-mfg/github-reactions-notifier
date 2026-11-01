@@ -140,7 +140,7 @@ describe("signIn", () => {
     ]);
 
     const { rows: windows } = await db.query<{ starts_at_signup: boolean }>(
-      `SELECT w.window_start = u.gh_created_at
+      `SELECT w.window_start = '1970-01-01T00:00:00Z'::timestamptz
                 AND w.window_end = c.discovery_started_at AS starts_at_signup
        FROM backfill_windows w
        JOIN subscription_categories c ON c.id = w.category_id

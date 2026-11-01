@@ -2,6 +2,9 @@
 
 **Status:** Draft for discussion · **Working name:** `github-reactions-notifier` (GRN)
 
+**M1 acceptance baseline:** `reactions-notifier-m1-requirements.md` is authoritative for
+implemented M1 behavior and its known gaps; this document also describes future milestones.
+Backfill starts at `1970-01-01T00:00:00Z`, not account creation.
 
 ---
 
@@ -153,8 +156,8 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
   test could not do. A type added to an
   existing source later — because a milestone ships it (discussions, M2) or because the user
   switches it on (FR-4d) — carries its own enable moment and so gets its own silent
-  first sync; switched off and on again, it gets a new one. When a category's backfill
-  completes, GRN posts **one summary** of the content it found as an onboarding moment.
+  first sync; switched off and on again, it gets a new one. M1 sends no backfill-completion
+  summary. A completion summary is deferred to M2.
 - **FR-7** Each (content, reactor, emoji) triple notifies **at most once per user**, even when
   several of that user's sources match the same item, and across re-adds, retries and restarts.
 - **FR-8** Detection latency is an **emergent, measured property**, not a guarantee — it falls
@@ -180,8 +183,7 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
   (e.g. "in my repos, only content written by others"), minimum reactions-per-batch
   threshold, mute a single thread.
 - **FR-12** Reactions by the user themselves are excluded by default; bot reactors excluded by
-  default. Both become configurable with FR-11 in M2; until then they are fixed policy in the
-  pipeline (§6.6) rather than stored settings.
+  default. Both are implemented and become configurable with FR-11 in M2.
 - **FR-14** *(M4, optional)* E-mail channels require double opt-in and one-click unsubscribe. The
   GitHub-native channel needs neither: signing in (FR-1) *is* the opt-in — the sign-in page
   states that GRN will open a public inbox issue for the user — and replying `/stop` in it *is*
@@ -323,7 +325,7 @@ The queue is the `jobs` table (§6.5), with two kinds in M1:
 
 | Kind | Rows | Runs |
 |---|---|---|
-| `sync` | One per user, inserted at signup and never deleted | The user's score-ordered queue (§6.3) — discovery, backfill and polling — with fan-out, replays and `reaction_notifications` inserts inside its transactions (§6.6). It also creates the user's one-off messages: FR-6's summary, in the transaction that deletes a category's last backfill window, and FR-17's notice on a `401` |
+| `sync` | One per user, inserted at signup and deleted on account deletion or permanent delivery failure | The user's score-ordered queue (§6.3) — discovery, backfill and polling — with fan-out, replays and `reaction_notifications` inserts inside its transactions (§6.6). It also creates the user's one-off messages: FR-6's summary, in the transaction that deletes a category's last backfill window, and FR-17's notice on a `401` |
 | `deliver` | One per message, deleted once posted | One write by the machine account: a user's batch of reactions (§6.6), a one-off message, or the opening of an inbox issue — the user's first, at sign-in, or a rollover (§6.7) |
 
 Discovery, backfill and polling are not kinds of their own: they compete in one queue for one
@@ -880,12 +882,14 @@ depends on.
 
 **`DiscussionComment` backfill, step by step.**
 
-1. **Window.** Cover the history from the user's account creation up to the `discussion`
+1. **Window.** Cover all possible parent-thread history up to the `discussion`
    category's `discovery_started_at` — the subscription's start, the M2 rollout, or whenever the
    user first switches on one of its types (FR-4d) — with one date window on the *discussion's*
    creation date (`created:A..B`). It is a `backfill_windows` row of that category, so
    it progresses independently of the `issue` category's window, and its one query serves
    discussions and discussion comments alike.
+   The lower bound must predate the oldest possible parent, not the user's account:
+   a new user can comment on an older thread.
 2. **Query.** Run
    `search(type: DISCUSSION, query: "involves:USER created:A..B sort:created-desc")`,
    re-querying the remaining range after every page (§6.3 "Within a window"). `involves:` is `author:` OR `mentions:` OR
@@ -1439,7 +1443,7 @@ users(gh_user_id PK, login, gh_created_at, token_enc, token_nonce, token_status)
         --   string then also discards its results, neither deletes its window nor advances its
         --   watermark, and retries under the new login (§6.3). Connection walks start from
         --   `viewer`, never `user(login:)`, so their results do not depend on the login
-        -- gh_created_at bounds the oldest backfill window (§6.3)
+        -- gh_created_at records account metadata, not the parent-thread backfill lower bound (§6.3)
         -- token_status ∈ {'active','revoked','invalid'}: gates the `sync` claim (§6.2) and
         --   drives FR-17; 'invalid' is NFR-3's undecryptable token
 
@@ -1478,7 +1482,7 @@ subscription_categories(id, subscription_id, category, discovery_started_at,
         --   `≤ now − D_discovery` filter null, dropping the category from the queue for good.
         --   They are the category's, not each pass's, because a category's passes go out as one
         --   query (§6.3)
-        -- Backfill *completion*, for FR-6's summary and FR-16's status, is a per-category
+        -- Backfill completion, for M2's summary and FR-16's status, is a per-category
         --   NOT EXISTS over backfill_windows and thread_scans — no window left to walk and no
         --   thread left to scan — not a stored column
 
@@ -1593,7 +1597,7 @@ notification_channels(id, user_id, kind, target, disabled_at, comment_count)
         -- at most one 'github_issue' channel per user is active — UNIQUE (user_id) WHERE
         --   kind = 'github_issue' AND disabled_at IS NULL — so concurrent sign-ins open one
         --   inbox, and a disabled channel lets the next sign-in open a new one (§6.7)
-        -- disabled_at is M1: §6.8 disables a channel on a permanent delivery failure (FR-17)
+        -- M1 has disabled_at, but permanent delivery failure deletes jobs instead (§6.8)
 
 -- global content metadata, shared across users
 content(node_id PK, type, repo_full_name, url, title, author_id, author_login)
@@ -1736,7 +1740,7 @@ the start.
 | `users.tier`, `users.scopes` | M2 | The private tier and its upgrade/downgrade path (FR-2). With one tier both are constants |
 | `users.stopped_at` | M2 | FR-3a's `/stop` (§6.7): when the user sent it, null while GRN works for them, cleared by `/start`. The `sync` claim adds `stopped_at IS NULL` beside `token_status = 'active'` (§6.2), and while it is set the dispatcher makes no write for the user but the closing of their inbox. Nothing else records a stop, so a resumed account picks up where it stopped. M1 has no `/stop`: unwatching the inbox issue silences GRN, and deleting the account (FR-3) stops it |
 | `users.gh_database_id` | M2 | The webhook route's key to a command's author (§6.7). A webhook payload names a comment's author by this REST id; its node id may be in the legacy format (C13), and the login is refreshed only by a discovery query (above), which a stopped user does not get. Nullable, so no backfill: a sign-in sets it, and so does the next discovery query of each user who signed up in M1, selecting it with `viewer { id login }` for free |
-| `filters jsonb` on `users`, `subscriptions`, `subscription_categories` and `subscription_types` | M2 | FR-11's global, per-source, per-category and per-type filters, a type inheriting its category's unless it sets its own (FR-4d). Like the switches, per-category and per-type filters can be set only from the category's first switch-on. M1 applies FR-12's self/bot exclusion as fixed pipeline policy (§6.6), so there is nothing to store. Note FR-11 asks for no per-channel filters — a `filters` column on `notification_channels` is not a requirement and is not planned |
+| `filters jsonb` on `users`, `subscriptions`, `subscription_categories` and `subscription_types` | M2 | FR-11's global, per-source, per-category and per-type filters, a type inheriting its category's unless it sets its own (FR-4d). Like the switches, per-category and per-type filters can be set only from the category's first switch-on. M1 includes self/bot reactions and implements no configurable filter. Note FR-11 asks for no per-channel filters — a `filters` column on `notification_channels` is not a requirement and is not planned |
 | `tracked_content.muted_at` | M2 | FR-11's single-thread mute, written by the `/mute` control-plane command (§6.7). A muted item is still polled and its reactions still recorded; the filter stage drops them, so muting touches no other table |
 | `rate_limit_state.observed_at` | M2 | FR-16's "last poll" on the status page (§9). M1 has no status page, and the rollover rule and `elapsed` need only `reset_at` (§6.2, §6.4) |
 | `notification_channels.cadence` | M2 | FR-10's per-channel delivery frequency — instant, hourly, daily, weekly or off — which the notifier turns into the outbox's `scheduled_for` (§6.6). M1 delivers near-instant batches only (§6.6, §9) and has neither a settings UI nor `/daily` (§6.7) to change that, so its cadence is a constant. Arrives with M2's remaining cadences, defaulting to `instant` — M1's behaviour |
@@ -1821,10 +1825,8 @@ leaves no row: FR-7 needs none, since a reaction never sent cannot be sent twice
 is that a replay (above) re-checks the reactions it finds against the filters in force at
 that moment, so a filter loosened in between can let one through late.
 
-The filter stage itself exists from M1, but **configurable** filters are M2 (FR-11): until
-then it applies FR-12's self- and bot-exclusion as fixed policy. Self-exclusion compares
-`reactor_id` with the user's `gh_user_id`, never logins, so a rename on either side cannot
-let the user's own reactions through.
+M1 implements no self/bot filter: both are included (FR-12). **Configurable** filters are M2
+(FR-11). A future self-exclusion should compare node IDs, not logins, to survive renames.
 
 **Delivery without an outbox in M1.** M1 has one channel and one cadence (§9): near-instant,
 batched per user. A user's pending reactions are their `queued` rows in
@@ -1876,7 +1878,8 @@ WHERE EXISTS (SELECT 1 FROM reaction_notifications
 
 Rendering when sent is what makes the channel self-limiting: under load a job waits longer in
 the dispatcher's queue and so carries more, which spaces each user's messages as far apart as
-the ceiling requires (§6.7, §6.8). One-off messages — FR-6's summary, FR-17's notice — are
+the ceiling requires (§6.7, §6.8). One-off messages — FR-17's notice in M1, completion
+summaries only from M2 — are
 `deliver` jobs too, but not digests: rendered by whatever creates them, they neither
 block nor join a batch. The noise of near-instant delivery is accepted for M1; users can
 choose longer cadences from M2 (FR-10).
@@ -2196,6 +2199,13 @@ one resuming a job whose worker died mid-post (§6.2) — and the dispatcher re-
 right before posting. Without this, retries double-post — the most visible possible bug in a
 notification product.
 
+M1's implementation still checks only one page of 100: this does **not** satisfy the
+idempotency guarantee when a marker falls beyond that page. Reconciliation must remain
+indeterminate until the relevant range has been exhausted. It runs whenever the job has a
+recorded `attempted_at`, including a crash after a successful POST but before database commit.
+Mutation requests now refuse automatic redirects, and creation completion requires `201`
+plus a valid issue number or comment ID; malformed successes remain ambiguous.
+
 ---
 
 ## 7. Relationship to github-stats-extended
@@ -2364,7 +2374,7 @@ sources that are implemented.
   **`authored` adapter only** (issues, PRs and issue/PR comments) on the minimal schema it needs (§6.5),
   budget-driven priority queue, **GitHub-native
   inbox as the only channel**, opened by GRN at sign-in (§6.7), near-instant batched delivery
-  (§6.6), backfill summary (FR-6), paced idempotent dispatcher (§6.8), account deletion.
+  (§6.6), no backfill summary, paced dispatcher (remaining idempotency gap in §6.8), account deletion.
   Single-user alpha. Should M0 rule out the GitHub-native channel, Atom moves up from M2 to
   replace it.
 - **M2 — Beta.** `owned_repos` and `repo:` adapters; per-type configuration with a category

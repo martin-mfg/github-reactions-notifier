@@ -13,6 +13,7 @@ import type {
 } from "@grn/core";
 
 import { defaultConfig } from "../config.ts";
+import { validThreadScans } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
@@ -169,7 +170,10 @@ export const runThreadScans = async (
     fetcher ??
       createGraphQLFetcher(buildThreadScanDocument(rows.length), "bearer"),
     variables,
-    { isExpectedError: isMissingThread },
+    {
+      isExpectedError: isMissingThread,
+      validate: (data) => validThreadScans(data, rows.length),
+    },
   );
   if (!result.ok) {
     await settleSyncFailure(session, result.failure);

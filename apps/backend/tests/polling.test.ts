@@ -270,6 +270,66 @@ const syncJob = async () => {
 };
 
 describe("runPoll", () => {
+  it("measures latency with Postgres even when the host clock is skewed", async () => {
+    const session = await setUp();
+    await track("I_1");
+    const { rows: before } = await db.query<{ time: Date }>(
+      "SELECT now() AS time",
+    );
+    vi.spyOn(Date, "now").mockReturnValue(testNow + 24 * 60 * 60 * 1000);
+
+    await runPoll(session, {
+      probe: probing([newestAt(ago(10))]),
+      drillDown: drilling([
+        page([reaction(ago(10)), reaction(ago(20), carol)]),
+      ]),
+    });
+
+    const { rows: after } = await db.query<{ time: Date }>(
+      "SELECT now() AS time",
+    );
+    const log = vi
+      .mocked(logger.log)
+      .mock.calls.find(([message]) => message === "poll")?.[1];
+    for (const [field, age] of [
+      ["latencyP50Seconds", 10],
+      ["latencyP95Seconds", 20],
+    ] as const) {
+      const latency = (log as Record<string, number>)[field];
+      expect(latency).toBeGreaterThanOrEqual(
+        ((before[0]?.time.getTime() ?? 0) - Date.parse(ago(age))) / 1000,
+      );
+      expect(latency).toBeLessThanOrEqual(
+        ((after[0]?.time.getTime() ?? 0) - Date.parse(ago(age))) / 1000,
+      );
+    }
+  });
+
+  it.each(["probe", "drill-down"])(
+    "retries an omitted %s alias without committing poll progress",
+    async (query) => {
+      const session = await setUp();
+      await track("I_1");
+      const before = await item("I_1");
+      const result = await runPoll(session, {
+        probe: query === "probe" ? probing([]) : probing([newestAt(ago(10))]),
+        drillDown: query === "drill-down" ? drilling([]) : noDrillDown(),
+      });
+
+      expect(result).toEqual({ ok: false, failure: { kind: "transient" } });
+      expect(await events()).toEqual([]);
+      expect((await item("I_1")).watermark_at).toEqual(before.watermark_at);
+      expect((await item("I_1")).checked_ago).toBeGreaterThanOrEqual(
+        before.checked_ago,
+      );
+      expect(await syncJob()).toMatchObject({ locked_by: null });
+      expect((await syncJob())?.due_in).toBeCloseTo(
+        defaultConfig.syncRetrySeconds,
+        0,
+      );
+    },
+  );
+
   it("stores no reaction from before enabled_at", async () => {
     const session = await setUp();
     await track("I_1");

@@ -26,7 +26,7 @@ export type {
   RateLimitHeaders,
   ResponseDetails,
 } from "./common/outcome.js";
-export { pool } from "./common/pool.js";
+export { checkDatabaseConnection, pool } from "./common/pool.js";
 
 export { graphqlDocument } from "./graphql/graphqlDocument.js";
 export type { GraphQLDocument } from "./graphql/graphqlDocument.js";

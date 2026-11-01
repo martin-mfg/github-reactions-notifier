@@ -24,6 +24,32 @@ user's own token. Batches of new reactions go out as comments on the user's own 
 issue**, which a **machine account** opens and posts to in a public inbox repo. Reactions
 that existed before sign-in are never notified. The user can delete their account.
 
+### Implemented policy baseline
+
+The source of numeric defaults is `apps/backend/src/config.ts`, not earlier design examples.
+
+| Policy | Implemented M1 behavior |
+|---|---|
+| Minimum polling and discovery delay | Both 4 min |
+| Clock margin | 3 min; `D > CLOCK_MARGIN` |
+| Search overlap | 1 hour placeholder, pending M0 calibration |
+| Self and bot reactions | Included; no self/bot filter is implemented |
+| Null reactor | Stored and notified as `ghost`, with synthetic identity `ghost:<createdAt>` (canonical ISO timestamp) |
+| Backfill completion | No notification or summary |
+| Permanent delivery failure | Log and delete all of that user's jobs, including `sync`; keep other rows. A returning sign-in does not recreate `sync` |
+| GitHub request timeout | 2 min per request, including OAuth exchange, grant deletion and viewer lookup; no intermediate REST `/user` lookup |
+| Health probe | Separate short-lived database connection; 5 s total deadline, connection and statement timeouts, always closed. Missing database is down (`503`, except shields format) |
+| Backfill lower bound | `1970-01-01T00:00:00Z`, predating GitHub, regardless of account creation. Existing installations require the one-time `packages/core/sql/repair-backfill-history.sql` repair before restarting |
+| Release image smoke test | Process/page liveness at `/`, with the page-content assertion retained; no database required |
+
+### Remaining implementation and verification gaps
+
+- Delivery reconciliation currently checks only 100 issues/comments. A missing marker on a
+  full page is not proof of absence; this is an unresolved FR-9a gap. A recorded
+  `attempted_at` triggers reconciliation, not every job claim or only a caught interruption.
+- Database concurrency tests use a single serialized PGlite connection. They verify
+  sequential outcomes, not PostgreSQL lock waits, snapshots or `SKIP LOCKED` races.
+
 ---
 
 ## 1. Out of scope for M1 (do NOT build)
@@ -68,9 +94,9 @@ right:
   are **per user**. `content_sources` is a set. `[WHY]` Several users and sources will share
   items later (§6.5).
 - The FR-6 silence test is **per reaction**: `reaction.createdAt` vs the type's `enabled_at`.
-- Source adapters are pluggable (one per subscription kind). Channels sit behind a channel
-  adapter interface. The poller sits behind an interface, so a future reaction webhook can be
-  another producer of `reaction_events`.
+- **Deferred contract, not implemented:** source, channel and poller adapter interfaces.
+  M1 currently hardcodes task dispatch in `sync/schedule.ts` and GitHub delivery in
+  `inbox/dispatcher.ts`. Typed module functions are not the promised pluggable contracts.
 - The score has a `value_weight` term (poll = 1, discovery/backfill = `w`).
 - ~~Migrations are **real migrations**, not `CREATE TABLE IF NOT EXISTS` (§7.2).~~ **Decided
   in step 1:** M1 ships no migration framework. A single `schema.sql` creates
@@ -152,6 +178,7 @@ right:
 - **FR-10** Near-instant only: batch each user's reactions over **3 min**. Under load, the
   batches simply grow larger and arrive further apart.
 - **FR-12** Fixed policy, not stored settings: include the **user's own** reactions. This is only for testing and might be changed in a later version.
+  Bot reactions are also included; there is no bot filter in M1.
 - **FR-15** Digests group by content item, then by emoji: "5 new 👍 and 2 🎉 on *item*". In M1
   every item is the user's own, so no author or source labels are needed. The anti-mention and
   anti-cross-reference rendering rules are in §11.
@@ -213,15 +240,16 @@ right:
   - `constants.ts` defines `RepositoryAffiliation` inline instead of importing it from
     generated GraphQL types.
   - `http.ts` sends the C13 header (§3) on every request.
-  - `users.ts` exports `githubAuthenticate` but not yet `authenticate`, which needs
-    `storeUser` from `database.js`. FR-2a can use `githubAuthenticate(code, false)`'s
-    `needDowngrade`, which is `true` exactly when the token has a scope.
+  - `users.ts` exports `githubAuthenticate(code)`, a token exchange returning
+    `{ accessToken, hasScope }` without an identity lookup. The sign-in callback revokes
+    scoped grants and restarts before requesting `viewer`; only a no-scope token is stored.
   - The user-related parts of `database.js` target github-stats-extended's schema. They are
     adapted to §13 in step 3, together with NFR-3's encryption.
   - The retryer keeps PAT rotation (github-stats-extended needs it). Step 4 adds the
     per-user-token mode next to it, and GRN uses only that mode.
-- Forbid app-specific imports in `packages/` (eslint `import-x/no-restricted-paths` and
-  `no-restricted-imports`).
+- **Unimplemented guard:** app-specific imports in `packages/` are forbidden by design, but
+  `eslint.config.js` currently enables neither `import-x/no-restricted-paths` nor
+  `no-restricted-imports`. This boundary is not lint-enforced.
 - **Writes need a separate, mutation-safe retry path.** `[WHY]` The existing retryer rotates
   PATs and retries freely, which is unsafe for content creation (§12).
 
@@ -422,7 +450,9 @@ Each reads a single page (`first: 100`, plus `pageInfo { hasNextPage }`) and sta
   catch-up.
 
 **Backfill** (one date window via `search`, walked newest-first, one page per task):
-- On signup, insert **one** window that covers `users.gh_created_at` → `discovery_started_at`.
+- On signup, insert **one** window that covers `1970-01-01T00:00:00Z` → `discovery_started_at`.
+  Search filters parent-thread creation, so the lower bound must predate GitHub, not merely
+  the user's account: a user who joined in 2015 can comment in 2020 on a 2010 thread.
   `[WHY]` Each page re-queries the remaining range, so the 1,000-result search cap never
   applies, and `sort:created-desc` already walks newest-first. Many small windows would buy
   the same order with more rows and a split step.
@@ -510,7 +540,11 @@ with `reactions(first: 100, orderBy: {field: CREATED_AT, direction: DESC})` sele
   watermark as usual; do not query further. The unread reactions are never notified, which is
   a known gap. `[WHY]` More than 100 new reactions on one item between two polls is very rare.
   A later milestone hands the skipped range to a separate task.
-- Skip and log any reaction with a null `user`.
+- Store and notify a reaction with a null `user` as GitHub's deleted-account `ghost`:
+  `reactor_login = 'ghost'`, `reactor_id = 'ghost:' || createdAt`, with the timestamp
+  normalized to canonical ISO format. Re-reads deduplicate normally. Same-item, same-emoji
+  ghost reactions with the same timestamp collapse to one synthetic identity. Do not skip
+  the reaction or store a null key.
 - Insert into `reaction_events` with `ON CONFLICT DO NOTHING RETURNING *`. Only rows actually
   returned flow on to fan-out (§10).
 
@@ -639,6 +673,10 @@ WHERE EXISTS (SELECT 1 FROM reaction_notifications WHERE user_id = $user AND out
 **Unexpected responses.** This covers any HTTP status, GraphQL `errors` entry (including those
 returned with a `200`), or response shape that no rule here or in §9 covers. It applies to every
 GitHub call, in `sync` and `deliver` jobs alike:
+- Validate each sync query's required fields, connection nodes/page info, and every requested
+  alias before committing progress. An omitted alias is malformed, not an explicit `null`
+  missing-node result or an empty-object fragment result. Malformed data preserves discovery
+  windows, scans, watermarks and check times, and releases the lease for a transient retry.
 - Log a **warning** with the job id, user, kind, HTTP status, GraphQL error `type`s, and the
   response message.
 - Treat the response as **transient** error.
@@ -658,11 +696,17 @@ GitHub call, in `sync` and `deliver` jobs alike:
     `sync` jobs: polling resumes from the stored watermarks. Reactions in the failed digests are
     lost.
 - **Idempotency:** any attempt after the first is **ambiguous**, including a reaper rescue.
+  Concretely, `payload.attempted_at` is stamped just before the first POST; only jobs carrying
+  it reconcile. A retry of work that never reached that transaction needs no marker check.
   Before re-posting, check whether the `grn:{uuid}` marker already exists:
   - For a comment: list the recent comments on the target issue.
   - For an opening: list the inbox repo's newest issues. If the marker is found, point the
     channel at that issue instead of opening a new one.
 - Re-check the lease right before posting.
+- Mutation requests never follow redirects. A delivery POST must return `201` and an object
+  containing a positive safe-integer issue `number` (opening) or comment `id`. Arrays, nulls,
+  missing identifiers and other statuses are transient/ambiguous, not proof of delivery.
+  They release the lease with backoff and preserve the job for marker reconciliation.
 
 ---
 
@@ -749,7 +793,7 @@ For a returning user, the sign-in instead updates the token and login, sets
 | Name | Default | Notes |
 |---|---|---|
 | `D` | 4 min | Minimum re-check delay per item |
-| `D_discovery` | max(search lag, D) | Minimum delay per category |
+| `D_discovery` | 4 min | Placeholder pending search-lag calibration; intended eventual value is max(search lag, D) |
 | `P` | 0.8 | Score exponent |
 | `w` | 2 | Discovery/backfill weight. No principled default; calibrate in M0. |
 | `TARGET` | 0.8 | Budget ramp |
@@ -765,7 +809,7 @@ For a returning user, the sign-in instead updates the token and login, sets
 | Sync retry delay | 5 min | After a transient failure; ≥ 60 s after a secondary limit naming no wait |
 | Lease reap age | 15 min | Shorten after observing real commit gaps |
 | Reaper backoff | 1 min × 2^min(attempts, 8) | |
-| Search overlap margin | `[TBD]` | From the M0 lag measurement |
+| Search overlap margin | 1 hour | Placeholder pending the M0 lag measurement |
 | Max dispatch attempts before alert | 1 | |
 | Cost alarm | > 3 points | |
 | Clock-skew alarm | > 2 s | |
@@ -1017,7 +1061,8 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
      the primary keys of `reaction_events` and `reaction_notifications`.
    - Polls send no `viewer` check; discovery's catches a changed login.
    - FR-8's latency is logged per poll as `latencyP50Seconds` and `latencyP95Seconds` of the
-     new reactions (nearest rank, GitHub's `createdAt` to the poll's end).
+     new reactions (nearest rank, GitHub's `createdAt` to Postgres `now()` in the poll's
+     finishing transaction, never the application host's clock).
    - `runSyncTask` is not run by a worker yet; that is step 10.
 8. **Pipeline and digest:** fan-out (the `enabled_at` test; FR-12 keeps the user's own
    reactions), `reaction_notifications`, and the digest SQL.
@@ -1054,7 +1099,8 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    *Accept:* tests show an ambiguous failure never double-posts, a pause blocks all `deliver`
    jobs, a permanent failure deletes all of the user's jobs (including `sync`), the rendering
    sanitises `@`, `#123`, and links, and an oversized body is truncated at 65,536 characters.
-   *Status:* done. The dispatcher is `runDeliver` in `apps/backend/src/inbox/dispatcher.ts`; it
+   *Status:* implemented, with the unresolved one-page reconciliation gap below. The dispatcher
+   is `runDeliver` in `apps/backend/src/inbox/dispatcher.ts`; it
    works one leased `deliver` job. The digest's body is `renderDigestBody` in
    `apps/backend/src/inbox/digestBody.ts`. The machine account comes from
    `MACHINE_ACCOUNT_TOKEN` and `INBOX_REPO` (`owner/repo`). §12's backoff is
@@ -1067,7 +1113,11 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    - The marker check is a read, so it takes no bucket token. It reads one page of 100.
      For a comment, it reads the target issue's comments since `attempted_at − CLOCK_MARGIN`.
      For an opening, it reads the inbox repo's 100 newest issues, skipping pull requests.
+     It resolves the machine account's immutable REST author id through authenticated
+     `GET /user` and accepts markers only on issues/comments with that `user.id`.
      A failed check is settled by §12's table, like a failed post.
+     **Known correctness gap:** a successful full page without the marker is currently treated
+     as absent.
    - A rate limit with neither header also pauses the whole dispatcher, for the job's backoff,
      since secondary limits are account-wide. The job keeps its `run_at`, as in every pause.
      `classifyWrite` already alerts on every rate limit (step 4). A transient failure alerts on
@@ -1076,8 +1126,9 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
      §12's permanent row. `runDeliver` throws and keeps the lease, so the reaper's alerts
      surface it.
    - An opening whose channel already has a target is deleted with a warning, without a post.
-   - An opening whose response carries no issue number is transient. The next attempt's marker
-     check finds the issue and points the channel at it.
+   - Creation responses require `201` and a valid identifier (§12). A malformed response is
+     transient, releases the lease, and retains `attempted_at`; the next attempt checks for
+     the marker. It may still be unable to find it because of the one-page gap above.
    - Digest format (FR-15): one list item per item, in order of first reaction. Each reads
      "N new 👍 and M new 🎉 on your issue | your pull request | your comment on *[title](url)*
      in *repo*", with one sub-item per emoji listing who reacted.

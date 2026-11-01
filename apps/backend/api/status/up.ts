@@ -3,9 +3,8 @@
  * It reports whether the service responds and reaches its database.
  */
 
-import { logger, pool } from "@grn/core";
+import { checkDatabaseConnection, logger } from "@grn/core";
 
-import type { Database } from "../../src/db.ts";
 import type { ApiHandler } from "../_types.ts";
 
 /** A database check that hasn't answered within this long counts as down. */
@@ -36,41 +35,36 @@ const shieldsUptimeBadge = (up: boolean): ShieldsResponse => ({
 });
 
 /**
- * @param db The pool, or `null` if none is configured.
+ * @param check A bounded probe, or `null` if no database is configured.
  * @returns Whether the database answers a trivial query in time.
  */
-const isDatabaseUp = async (db: Database | null): Promise<boolean> => {
-  if (!db) {
-    return false;
-  }
-  let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<boolean>((resolve) => {
-    timer = setTimeout(resolve, DB_CHECK_TIMEOUT_MS, false);
-  });
+const isDatabaseUp = async (
+  check: () => Promise<void> | null,
+): Promise<boolean> => {
   try {
-    return await Promise.race([
-      db.query("SELECT 1").then(() => true),
-      timedOut,
-    ]);
+    const probe = check();
+    if (probe === null) {
+      return false;
+    }
+    await probe;
+    return true;
   } catch (error) {
     logger.warn("health check: database unreachable", { error });
     return false;
-  } finally {
-    clearTimeout(timer);
   }
 };
 
 /**
- * @param db The pool; replaced in tests.
+ * @param check A bounded database probe; replaced in tests.
  * @returns The health endpoint. While GRN is down it answers `503`, so monitors see it from
  *   the status alone, except for `type=shields`: shields.io renders only a `200`'s badge.
  */
 export const createUpHandler =
-  (db: () => Database | null): ApiHandler =>
+  (check: () => Promise<void> | null): ApiHandler =>
   async (req, res) => {
     const { type } = req.query;
     const format = typeof type === "string" ? type.toLowerCase() : "boolean";
-    const up = await isDatabaseUp(db());
+    const up = await isDatabaseUp(check);
 
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Cache-Control", "no-store");
@@ -89,4 +83,9 @@ export const createUpHandler =
     }
   };
 
-export default createUpHandler(() => pool);
+export default createUpHandler(() => {
+  const connectionString = process.env["POSTGRES_URL"];
+  return connectionString
+    ? checkDatabaseConnection(connectionString, DB_CHECK_TIMEOUT_MS)
+    : null;
+});

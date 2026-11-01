@@ -17,7 +17,11 @@ import { withTransaction } from "../src/db.ts";
 import type { Database } from "../src/db.ts";
 import { machineAccountFromEnv, runDeliver } from "../src/inbox/dispatcher.ts";
 import type { MachineAccount } from "../src/inbox/dispatcher.ts";
-import { claimJob, reapExpiredLeases } from "../src/jobs/queue.ts";
+import {
+  LeaseLostError,
+  claimJob,
+  reapExpiredLeases,
+} from "../src/jobs/queue.ts";
 import type { Lease } from "../src/jobs/queue.ts";
 import { fanOut } from "../src/pipeline/fanOut.ts";
 import type { NewReaction } from "../src/pipeline/fanOut.ts";
@@ -51,16 +55,7 @@ const machine: MachineAccount = {
   token: "ghp_machine",
   inboxRepo: "grn-inbox/inbox",
 };
-
-/** A fake GitHub: records every request and answers with `reply`. */
-const fakeGitHub = (reply: (request: MutationRequest) => unknown) => {
-  const requests: Array<MutationRequest> = [];
-  const send = <T>(request: MutationRequest): Promise<GitHubOutcome<T>> => {
-    requests.push(request);
-    return Promise.resolve(reply(request) as GitHubOutcome<T>);
-  };
-  return { requests, send };
-};
+const machineAuthor = { id: 123, login: "machine-renamed" };
 
 const details = (status: number | null, message = "") => ({
   status,
@@ -76,6 +71,23 @@ const ok = (data: unknown) => ({
   errors: [],
   details: details(201),
 });
+
+/** A fake GitHub: records every request and answers with `reply`. */
+const fakeGitHub = (
+  reply: (request: MutationRequest) => unknown,
+  identity: unknown = ok(machineAuthor),
+) => {
+  const requests: Array<MutationRequest> = [];
+  const send = <T>(request: MutationRequest): Promise<GitHubOutcome<T>> => {
+    requests.push(request);
+    return Promise.resolve(
+      (request.path === "/user"
+        ? identity
+        : reply(request)) as GitHubOutcome<T>,
+    );
+  };
+  return { requests, send };
+};
 
 const failed = (status: number | null, timedOut = false) => ({
   kind: "failed",
@@ -271,7 +283,11 @@ describe("runDeliver: opening", () => {
     let created: unknown = null;
     const github = fakeGitHub((request) => {
       if (request.method === "POST") {
-        created = { number: 42, body: (request.body as { body: string }).body };
+        created = {
+          number: 42,
+          body: (request.body as { body: string }).body,
+          user: machineAuthor,
+        };
         return ok({});
       }
       return ok([{ number: 43, body: "other" }, created]);
@@ -286,8 +302,10 @@ describe("runDeliver: opening", () => {
     expect(github.requests.map((request) => request.method)).toEqual([
       "POST",
       "GET",
+      "GET",
     ]);
-    expect(github.requests[1]?.path).toBe(
+    expect(github.requests[1]?.path).toBe("/user");
+    expect(github.requests[2]?.path).toBe(
       "/repos/grn-inbox/inbox/issues?state=all&sort=created&direction=desc&per_page=100",
     );
     expect(await target(user)).toBe("grn-inbox/inbox#42");
@@ -367,13 +385,129 @@ describe("runDeliver: comments", () => {
 });
 
 describe("runDeliver: ambiguous attempts never post twice", () => {
+  it("ignores a newer attacker-authored copy of an opening marker", async () => {
+    const user = await signUp("alice");
+    const first = await claim();
+    const github = fakeGitHub((request) =>
+      request.method === "POST"
+        ? ok({})
+        : ok([
+            {
+              number: 99,
+              body: `<!-- grn:${first.id} -->`,
+              user: { id: 456, login: machineAuthor.login },
+            },
+            {
+              number: 42,
+              body: `<!-- grn:${first.id} -->`,
+              user: machineAuthor,
+            },
+          ]),
+    );
+    expect(await deliver(first, github.send)).toBe("retrying");
+    await advance();
+
+    expect(await deliver(await claim(), github.send)).toBe("found");
+    expect(await target(user)).toBe("grn-inbox/inbox#42");
+    expect(
+      github.requests.filter((request) => request.method === "POST"),
+    ).toHaveLength(1);
+    expect(github.requests[1]).toMatchObject({
+      method: "GET",
+      path: "/user",
+      token: machine.token,
+    });
+  });
+
+  it.each([undefined, null, {}, { id: 456, login: machineAuthor.login }])(
+    "does not reconcile a comment with an untrusted author: %j",
+    async (user) => {
+      const recipient = await signUp("alice", "grn-inbox/inbox#7");
+      const id = await insertNotice(recipient);
+      await db.query(
+        "UPDATE jobs SET payload = payload || '{\"attempted_at\": 1700000000}' WHERE id = $1",
+        [id],
+      );
+      const github = fakeGitHub((request) =>
+        request.method === "GET"
+          ? ok([{ body: `<!-- grn:${id} -->`, user }])
+          : ok({ id: 1 }),
+      );
+
+      expect(await deliver(await claim(), github.send)).toBe("posted");
+      expect(github.requests.map((request) => request.method)).toEqual([
+        "GET",
+        "GET",
+        "POST",
+      ]);
+    },
+  );
+
+  it.each([ok({}), ok({ id: "123" }), failed(503), rateLimited(120)])(
+    "does not reconcile or post when machine identity is unavailable: %j",
+    async (identity) => {
+      const user = await signUp("alice");
+      const first = await claim();
+      const github = fakeGitHub(() => ok({}), identity);
+      expect(await deliver(first, github.send)).toBe("retrying");
+      await advance();
+
+      expect(await deliver(await claim(), github.send)).toBe("retrying");
+      expect(await target(user)).toBeNull();
+      expect(await job(first.id)).toMatchObject({ locked_by: null });
+      expect(github.requests.map((request) => request.path)).toEqual([
+        "/repos/grn-inbox/inbox/issues",
+        "/user",
+      ]);
+    },
+  );
+
+  it("reconciles an external write when the lease is lost before finishing", async () => {
+    const user = await signUp("alice", "grn-inbox/inbox#7");
+    const id = await insertNotice(user);
+    const posted: Array<unknown> = [];
+    const github = fakeGitHub(async (request) => {
+      if (request.method === "GET") {
+        return ok(posted);
+      }
+      posted.push({
+        body: (request.body as { body: string }).body,
+        user: machineAuthor,
+      });
+      await db.query(
+        "UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE id = $1",
+        [id],
+      );
+      expect(await reapExpiredLeases(db)).toHaveLength(1);
+      return ok({ id: 1 });
+    });
+
+    await expect(deliver(await claim(), github.send)).rejects.toBeInstanceOf(
+      LeaseLostError,
+    );
+    const pending = await job(id);
+    expect(pending?.locked_by).toBeNull();
+    expect(pending?.attempted_at).toEqual(expect.any(Number));
+    await advance();
+    expect(await deliver(await claim(), github.send)).toBe("found");
+    expect(posted).toHaveLength(1);
+    expect(github.requests.map((request) => request.method)).toEqual([
+      "POST",
+      "GET",
+      "GET",
+    ]);
+  });
+
   it("finds the comment of an attempt that timed out after it landed", async () => {
     const user = await signUp("alice", "grn-inbox/inbox#7");
     const id = await insertNotice(user);
     const posted: Array<unknown> = [];
     const github = fakeGitHub((request) => {
       if (request.method === "POST") {
-        posted.push(request.body);
+        posted.push({
+          body: (request.body as { body: string }).body,
+          user: machineAuthor,
+        });
         return failed(null, true);
       }
       return ok([{ body: "earlier" }, ...posted]);
@@ -386,7 +520,7 @@ describe("runDeliver: ambiguous attempts never post twice", () => {
     expect(await deliver(await claim(), github.send)).toBe("found");
 
     expect(posted).toHaveLength(1);
-    const check = github.requests[1];
+    const check = github.requests[2];
     expect(check?.method).toBe("GET");
     const since = new Date(
       ((first?.attempted_at ?? 0) - defaultConfig.clockMarginSeconds) * 1000,
@@ -402,7 +536,10 @@ describe("runDeliver: ambiguous attempts never post twice", () => {
     const id = await insertNotice(user);
     const posted: Array<unknown> = [];
     const crash = fakeGitHub((request) => {
-      posted.push(request.body);
+      posted.push({
+        body: (request.body as { body: string }).body,
+        user: machineAuthor,
+      });
       throw new Error("worker died");
     });
     await expect(deliver(await claim(), crash.send)).rejects.toThrow(
@@ -419,7 +556,10 @@ describe("runDeliver: ambiguous attempts never post twice", () => {
     expect(await deliver(await claim(), github.send)).toBe("found");
 
     expect(posted).toHaveLength(1);
-    expect(github.requests.map((request) => request.method)).toEqual(["GET"]);
+    expect(github.requests.map((request) => request.method)).toEqual([
+      "GET",
+      "GET",
+    ]);
     expect(await job(id)).toBeUndefined();
   });
 
@@ -443,6 +583,7 @@ describe("runDeliver: ambiguous attempts never post twice", () => {
     expect(github.requests.map((request) => request.method)).toEqual([
       "POST",
       "GET",
+      "GET",
       "POST",
     ]);
     expect(first?.attempted_at).toEqual(expect.any(Number));
@@ -451,6 +592,63 @@ describe("runDeliver: ambiguous attempts never post twice", () => {
 });
 
 describe("runDeliver: failures", () => {
+  it.each(
+    [null, [], {}, { id: 0 }, { id: -1 }, { id: 1.5 }].map((body) => [body]),
+  )("keeps a malformed comment response ambiguous: %j", async (body) => {
+    const user = await signUp("alice", "grn-inbox/inbox#7");
+    const id = await insertNotice(user);
+    const github = fakeGitHub((request) =>
+      request.method === "GET"
+        ? ok([{ body: `Notice\n\n<!-- grn:${id} -->`, user: machineAuthor }])
+        : ok(body),
+    );
+
+    expect(await deliver(await claim(), github.send)).toBe("retrying");
+    const pending = await job(id);
+    expect(pending?.locked_by).toBeNull();
+    expect(pending?.attempted_at).toEqual(expect.any(Number));
+    await advance();
+    expect(await deliver(await claim(), github.send)).toBe("found");
+    expect(github.requests.map((request) => request.method)).toEqual([
+      "POST",
+      "GET",
+      "GET",
+    ]);
+  });
+
+  it.each(
+    [null, [], { number: 0 }, { number: -1 }, { number: 1.5 }].map((body) => [
+      body,
+    ]),
+  )(
+    "releases the opening lease after an invalid creation response: %j",
+    async (body) => {
+      const user = await signUp("alice");
+      const lease = await claim();
+      const github = fakeGitHub(() => ok(body));
+
+      expect(await deliver(lease, github.send)).toBe("retrying");
+      expect(await target(user)).toBeNull();
+      const pending = await job(lease.id);
+      expect(pending?.locked_by).toBeNull();
+      expect(pending?.attempted_at).toEqual(expect.any(Number));
+      await signUp("bob");
+      await db.query(
+        "UPDATE dispatch_bucket SET level_at = now() - interval '2 seconds'",
+      );
+      expect(await claim()).toMatchObject({ userId: "U_bob" });
+    },
+  );
+
+  it("does not finish a POST with a 200 list response", async () => {
+    const user = await signUp("alice", "grn-inbox/inbox#7");
+    const id = await insertNotice(user);
+    const github = fakeGitHub(() => ({ ...ok([]), details: details(200) }));
+
+    expect(await deliver(await claim(), github.send)).toBe("retrying");
+    expect(await job(id)).toMatchObject({ locked_by: null });
+  });
+
   it("backs off a transient failure, and alerts", async () => {
     const user = await signUp("alice", "grn-inbox/inbox#7");
     const id = await insertNotice(user);
@@ -547,7 +745,10 @@ describe("runDeliver: failures", () => {
 
     expect(await deliver(await claim(), github.send)).toBe("retrying");
 
-    expect(github.requests.map((request) => request.method)).toEqual(["GET"]);
+    expect(github.requests.map((request) => request.method)).toEqual([
+      "GET",
+      "GET",
+    ]);
     expect((await job(id))?.attempted_at).toBe(1_700_000_000);
   });
 });

@@ -1,32 +1,10 @@
 import axios from "axios";
 
-interface GitHubUserResponse {
-  login?: string;
-}
+const REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
 
 interface GitHubAccessTokenResponse {
   access_token?: string;
   scope?: string;
-}
-
-/**
- * Given an access token, return the GitHub login (userId) or null if invalid
- *
- * @param accessToken GitHub access token
- * @returns login name or null if invalid access_token
- */
-async function getUserFromToken(accessToken: string): Promise<string | null> {
-  const res = await axios.get<GitHubUserResponse>(
-    "https://api.github.com/user",
-    {
-      headers: {
-        Accept: "application/vnd.github.v3+json",
-        Authorization: `bearer ${accessToken}`,
-      },
-    },
-  );
-
-  return res.data.login || null;
 }
 
 /**
@@ -48,6 +26,8 @@ export async function deleteGrant(accessToken: string): Promise<void> {
     await axios.delete(
       `https://api.github.com/applications/${encodeURIComponent(clientId)}/grant`,
       {
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        maxRedirects: 0,
         auth: { username: clientId, password: clientSecret },
         data: { access_token: accessToken },
         headers: { Accept: "application/vnd.github+json" },
@@ -63,16 +43,15 @@ export async function deleteGrant(accessToken: string): Promise<void> {
 }
 
 /**
- * Exchanges OAuth code for access token and returns userId + accessToken
+ * Exchanges an OAuth code without looking up the token's owner. Callers must check scope
+ * before using the token for identity requests or storing it.
  *
  * @param code GitHub authentication code from OAuth process
- * @param privateAccess whether private access was requested
- * @returns user_id and access_token of authenticated user, and whether downgrade is needed
+ * @returns The access token and whether its exchange response carries any scope.
  */
 export async function githubAuthenticate(
   code: string,
-  privateAccess: boolean,
-): Promise<{ userId: string; accessToken: string; needDowngrade: boolean }> {
+): Promise<{ accessToken: string; hasScope: boolean }> {
   const {
     OAUTH_CLIENT_ID: clientId,
     OAUTH_CLIENT_SECRET: clientSecret,
@@ -97,6 +76,8 @@ export async function githubAuthenticate(
       "https://github.com/login/oauth/access_token",
       params.toString(),
       {
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        maxRedirects: 0,
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
@@ -114,17 +95,8 @@ export async function githubAuthenticate(
       );
     }
 
-    const userId = await getUserFromToken(accessToken);
-
-    if (!userId) {
-      throw new Error("OAuth Error: Invalid user_id/access_token");
-    }
-
-    // if user previously granted private access, then logged in via public flow
-    const needDowngrade = !!body.scope && !privateAccess;
-
     console.log("GitHub Authentication", `${Date.now() - start} ms`);
-    return { userId, accessToken, needDowngrade };
+    return { accessToken, hasScope: !!body.scope };
   } catch (err) {
     if (axios.isAxiosError(err) && err.response) {
       // eslint-disable-next-line preserve-caught-error

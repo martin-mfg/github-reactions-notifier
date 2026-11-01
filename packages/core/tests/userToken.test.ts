@@ -192,6 +192,26 @@ describe("mutationRequest", () => {
     expect(nock.pendingMocks()).toEqual([]);
   });
 
+  it.each([301, 302, 303, 307, 308])(
+    "does not follow a %i redirect",
+    async (status) => {
+      const scope = nock("https://api.github.com")
+        .post("/repos/grn/inbox/issues/1/comments", comment.body)
+        .reply(status, "", { Location: "https://api.github.com/redirected" });
+      const redirected = nock("https://api.github.com")
+        .get("/redirected")
+        .reply(200, []);
+
+      expect(await mutationRequest(comment)).toMatchObject({
+        kind: "failed",
+        details: { status },
+      });
+      scope.done();
+      expect(redirected.isDone()).toBe(false);
+      nock.cleanAll();
+    },
+  );
+
   it("classifies a secondary limit", async () => {
     nock("https://api.github.com")
       .post("/repos/grn/inbox/issues/1/comments")

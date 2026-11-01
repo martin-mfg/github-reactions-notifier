@@ -23,6 +23,7 @@ import {
 import type { ApiHandler, ApiRequest, ApiResponse } from "../api/_types.ts";
 
 import type { Config } from "./config.ts";
+import { defaultConfig } from "./config.ts";
 import type { Database } from "./db.ts";
 import { deleteAccount, signIn } from "./users/accounts.ts";
 import type { GitHubIdentity } from "./users/accounts.ts";
@@ -257,8 +258,12 @@ const fetchViewerDocument = createGraphQLFetcher(ViewerDocument, "bearer");
  * @param accessToken The fresh token.
  * @returns The token's owner.
  */
-const fetchViewer = async (accessToken: string): Promise<GitHubIdentity> => {
-  const { data } = await fetchViewerDocument({}, accessToken);
+export const fetchViewer = async (
+  accessToken: string,
+): Promise<GitHubIdentity> => {
+  const { data } = await fetchViewerDocument({}, accessToken, undefined, {
+    signal: AbortSignal.timeout(defaultConfig.requestTimeoutSeconds * 1000),
+  });
   if (data.errors?.length) {
     throw new Error(
       `viewer query failed: ${data.errors.map((e) => e.message).join("; ")}`,
@@ -272,13 +277,7 @@ let cipher: AccessTokenCipher | undefined;
 export const defaultHandlers = createOAuthHandlers({
   db: () => pool,
   cipher: () => (cipher ??= AccessTokenCipher.fromEnv()),
-  exchangeCode: async (code) => {
-    const { accessToken, needDowngrade } = await githubAuthenticate(
-      code,
-      false,
-    );
-    return { accessToken, hasScope: needDowngrade };
-  },
+  exchangeCode: githubAuthenticate,
   fetchViewer,
   deleteGrant,
   env: () => ({

@@ -70,6 +70,18 @@ psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f packages/core/sql/schema.sql
 
 Tests need no database server: they apply `schema.sql` to an in-process Postgres ([PGlite](https://pglite.dev)).
 
+For an existing database created before the platform-wide backfill fix, stop the backend and
+apply this one-time data repair before restarting with the updated code:
+
+```powershell
+psql $env:POSTGRES_URL -v ON_ERROR_STOP=1 -f packages\core\sql\repair-backfill-history.sql
+```
+
+It extends unfinished backfills to `1970-01-01T00:00:00Z` without resetting their progress and
+reopens the omitted older-parent range for completed backfills. Existing reaction watermarks,
+notifications and jobs are unchanged. Do not rerun it after the repaired backfill completes:
+completed windows are deleted, so another run would enqueue that history again.
+
 ### Environment variables (backend)
 
 | Variable                | Purpose                                                                                                                                                                                 |
@@ -107,6 +119,8 @@ pnpm --filter ./packages/core run generate-graphql-types
 
 The app is deployed as a Docker image, which Vercel runs from `Dockerfile.vercel`: one container runs the backend, which also serves the built frontend.
 Every release publishes a multi-platform image (amd64/arm64) to the GitHub Container Registry (`.github/workflows/release.yml`).
+The image smoke test checks `/` and its page content without a database. `/api/status/up`
+remains a database-readiness check.
 
 ```sh
 docker run -d -p 9000:80 --env-file apps/backend/.env ghcr.io/martin-mfg/github-reactions-notifier:latest

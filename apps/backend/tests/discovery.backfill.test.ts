@@ -75,6 +75,7 @@ const ALICE = {
 
 /** The window's end in these tests; its fraction is below what search can express. */
 const WINDOW_END = "2026-10-01T12:00:00.500Z";
+const BACKFILL_START = "1970-01-01T00:00:00Z";
 const BASE = "2026-10-01T12:00:00Z";
 
 /**
@@ -320,16 +321,120 @@ describe("backfillSearch", () => {
   it("searches the window newest-first, both bounds in whole seconds", () => {
     expect(
       backfillSearch("alice", {
-        start: new Date("2015-01-01T00:00:00Z"),
+        start: new Date(BACKFILL_START),
         end: new Date(WINDOW_END),
       }),
     ).toBe(
-      "involves:alice created:2015-01-01T00:00:00+00:00..2026-10-01T12:00:00+00:00 sort:created-desc",
+      "involves:alice created:1970-01-01T00:00:00+00:00..2026-10-01T12:00:00+00:00 sort:created-desc",
     );
   });
 });
 
 describe("runBackfill", () => {
+  it.each([
+    [
+      "missing search",
+      (data: AuthoredBackfillQuery) => Reflect.deleteProperty(data, "search"),
+    ],
+    [
+      "missing nodes",
+      (data: AuthoredBackfillQuery) =>
+        Reflect.deleteProperty(data.search, "nodes"),
+    ],
+    [
+      "null nodes",
+      (data: AuthoredBackfillQuery) => Reflect.set(data.search, "nodes", null),
+    ],
+    [
+      "missing pageInfo",
+      (data: AuthoredBackfillQuery) =>
+        Reflect.deleteProperty(data.search, "pageInfo"),
+    ],
+    [
+      "missing hasNextPage",
+      (data: AuthoredBackfillQuery) =>
+        Reflect.deleteProperty(data.search.pageInfo, "hasNextPage"),
+    ],
+    [
+      "missing viewer",
+      (data: AuthoredBackfillQuery) => Reflect.deleteProperty(data, "viewer"),
+    ],
+    [
+      "malformed hit",
+      (data: AuthoredBackfillQuery) =>
+        Reflect.set(data.search, "nodes", [{ __typename: "Issue" }]),
+    ],
+    [
+      "missing timeline nodes",
+      (data: AuthoredBackfillQuery) =>
+        Reflect.set(data.search, "nodes", [
+          {
+            ...hit("I_1", at(-10)),
+            timelineItems: { pageInfo: { hasNextPage: false } },
+          },
+        ]),
+    ],
+  ])("retries %s without discarding the window", async (_name, corrupt) => {
+    const { session, categoryId } = await setUp();
+    const before = await windows();
+    const fetcher: BackfillFetcher = async () => {
+      const response = await searchPage();
+      const data = response.data.data;
+      if (!data) {
+        throw new Error("test response has no data");
+      }
+      corrupt(data);
+      return response;
+    };
+
+    expect(await runBackfill(session, categoryId, fetcher)).toEqual({
+      ok: false,
+      failure: { kind: "transient" },
+    });
+    expect(await windows()).toEqual(before);
+    expect(await threadScans()).toEqual([]);
+    expect(await trackedIds()).toEqual([]);
+    expect(await syncJob()).toMatchObject({ locked_by: null });
+    expect((await syncJob())?.due_in).toBeCloseTo(
+      defaultConfig.syncRetrySeconds,
+      0,
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "unexpected GraphQL response shape",
+      expect.objectContaining({ job: session.lease.id, status: 200 }),
+    );
+  });
+
+  it("discovers a historical comment on a parent older than the user's account", async () => {
+    const { session, categoryId } = await setUp();
+    const parent = hit("I_2010", "2010-01-01T00:00:00Z", {
+      author: bob,
+      comments: [comment("C_2020", "2020-01-01T00:00:00Z")],
+    });
+    const fetcher = vi.fn<BackfillFetcher>((variables) => {
+      const bounds = /created:(\S+)\.\.(\S+)/.exec(variables.query);
+      const start = Date.parse(bounds?.[1] ?? "");
+      const end = Date.parse(bounds?.[2] ?? "");
+      return searchPage({
+        hits: [parent].filter((thread) => {
+          const created = Date.parse(thread.createdAt);
+          return created >= start && created <= end;
+        }),
+      });
+    });
+
+    expect(await runBackfill(session, categoryId, fetcher)).toMatchObject({
+      ok: true,
+      status: "stored",
+      newItems: 1,
+      window: { kind: "deleted" },
+    });
+    expect(await trackedIds()).toEqual(["C_2020"]);
+    expect(await isBackfillComplete(db, categoryId)).toBe(true);
+    const [stored] = await tracked();
+    expect(stored?.watermark_at).toEqual(stored?.enabled_at);
+  });
+
   it("stores only the user's own threads and comments, not mentions or assignments", async () => {
     const { session, categoryId } = await setUp();
     const fetcher = searching({
@@ -366,7 +471,7 @@ describe("runBackfill", () => {
     });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(searchedFor(fetcher)).toEqual([
-      "involves:alice created:2015-01-01T00:00:00+00:00..2026-10-01T12:00:00+00:00 sort:created-desc",
+      "involves:alice created:1970-01-01T00:00:00+00:00..2026-10-01T12:00:00+00:00 sort:created-desc",
     ]);
     expect(await trackedIds()).toEqual(["C_own", "C_own2", "I_own"]);
 
@@ -386,7 +491,7 @@ describe("runBackfill", () => {
     expect(rows.find((row) => row.node_id === "C_own2")?.title).toBe("Thread");
 
     expect(await windows()).toEqual([
-      { start: iso(ALICE.createdAt), end: iso(at(-40)) },
+      { start: iso(BACKFILL_START), end: iso(at(-40)) },
     ]);
     expect(await syncJob()).toMatchObject({ locked_by: null });
     expect(await isBackfillComplete(db, categoryId)).toBe(false);
@@ -433,7 +538,7 @@ describe("runBackfill", () => {
     );
     expect(await trackedIds()).toEqual([]);
     expect(await windows()).toEqual([
-      { start: iso(ALICE.createdAt), end: WINDOW_END },
+      { start: iso(BACKFILL_START), end: WINDOW_END },
     ]);
   });
 
@@ -447,7 +552,7 @@ describe("runBackfill", () => {
     });
     await runBackfill(session, categoryId, first);
     expect(await windows()).toEqual([
-      { start: iso(ALICE.createdAt), end: iso(at(-20)) },
+      { start: iso(BACKFILL_START), end: iso(at(-20)) },
     ]);
 
     // page 2 is lost with the lease
@@ -474,7 +579,7 @@ describe("runBackfill", () => {
     expect((await syncJob())?.due_in).toBeCloseTo(300, 0);
     expect(await trackedIds()).toEqual(["I_2", "I_3"]);
     expect(await windows()).toEqual([
-      { start: iso(ALICE.createdAt), end: iso(at(-20)) },
+      { start: iso(BACKFILL_START), end: iso(at(-20)) },
     ]);
 
     // the resumed walk re-reads page 1's oldest second, and its last page ends the window
@@ -529,7 +634,7 @@ describe("runBackfill", () => {
       window: { kind: "moved", windowEnd: new Date(before) },
     });
     expect(await windows()).toEqual([
-      { start: iso(ALICE.createdAt), end: before },
+      { start: iso(BACKFILL_START), end: before },
     ]);
     expect(logger.error).toHaveBeenCalledOnce();
     expect(logger.error).toHaveBeenCalledWith(
@@ -606,7 +711,7 @@ describe("runBackfill", () => {
     expect(await trackedIds()).toEqual([]);
     expect(await threadScans()).toEqual([]);
     expect(await windows()).toEqual([
-      { start: iso(ALICE.createdAt), end: WINDOW_END },
+      { start: iso(BACKFILL_START), end: WINDOW_END },
     ]);
     const { rows } = await db.query("SELECT login FROM users");
     expect(rows).toEqual([{ login: "alice-renamed" }]);
@@ -665,6 +770,51 @@ describe("runThreadScans", () => {
       );
     }
   };
+
+  it.each(["omitted alias", "malformed timeline", "omitted nodes"])(
+    "preserves every scan and releases the lease on %s",
+    async (malformation) => {
+      const { session, categoryId } = await setUp();
+      await queueScans(categoryId, [
+        ["I_1", at(0)],
+        ["I_2", at(0)],
+      ]);
+      const before = await threadScans();
+      const fetcher: ScanFetcher = async (...args) => {
+        const response = await scanning([thread([comment("C_1", at(1))])])(
+          ...args,
+        );
+        const data = response.data.data;
+        if (!data) {
+          throw new Error("test response has no data");
+        }
+        if (malformation === "malformed timeline") {
+          Reflect.set(data, "thread_1", { timelineItems: {} });
+        } else if (malformation === "omitted nodes") {
+          Reflect.set(data, "thread_1", {
+            timelineItems: { pageInfo: { hasNextPage: false } },
+          });
+        }
+        return response;
+      };
+
+      expect(await runThreadScans(session, categoryId, fetcher)).toEqual({
+        ok: false,
+        failure: { kind: "transient" },
+      });
+      expect(await threadScans()).toEqual(before);
+      expect(await trackedIds()).toEqual([]);
+      expect(await syncJob()).toMatchObject({ locked_by: null });
+      expect((await syncJob())?.due_in).toBeCloseTo(
+        defaultConfig.syncRetrySeconds,
+        0,
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        "unexpected GraphQL response shape",
+        expect.objectContaining({ job: session.lease.id }),
+      );
+    },
+  );
 
   it("stores the user's comments, advances a thread, and deletes one after its last page", async () => {
     const { session, categoryId } = await setUp();

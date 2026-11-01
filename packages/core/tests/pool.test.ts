@@ -25,4 +25,24 @@ describe("pool", { timeout: 30_000 }, () => {
     expect(pool).toBeInstanceOf(Pool);
     await pool?.end();
   });
+
+  it("logs idle-client errors without throwing and keeps the pool usable", async () => {
+    vi.stubEnv("POSTGRES_URL", "postgres://localhost:5432/grn");
+    const { pool, logger } = await import("../src/index.js");
+    const logged = vi
+      .spyOn(logger, "error")
+      .mockImplementation(() => undefined);
+    const error = new Error("database restarted");
+    try {
+      expect(() => pool?.emit("error", error)).not.toThrow();
+      expect(logged).toHaveBeenCalledWith(
+        "database pool: idle client disconnected",
+        { error },
+      );
+      expect(pool?.ended).toBe(false);
+    } finally {
+      logged.mockRestore();
+      await pool?.end();
+    }
+  });
 });

@@ -13,7 +13,6 @@ import {
 
 import { createUpHandler } from "../api/status/up.ts";
 import { app } from "../app.ts";
-import type { Database } from "../src/db.ts";
 
 const fakeResponse = () => ({
   statusCode: 200,
@@ -21,11 +20,8 @@ const fakeResponse = () => ({
   send: vi.fn(),
 });
 
-const fakeDb = (query: () => Promise<unknown>): Database =>
-  ({ query, connect: vi.fn() }) as unknown as Database;
-
-const upDb = fakeDb(() => Promise.resolve({ rows: [], rowCount: 1 }));
-const downDb = fakeDb(() => Promise.reject(new Error("connection refused")));
+const upDb = () => Promise.resolve();
+const downDb = () => Promise.reject(new Error("connection refused"));
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -36,7 +32,7 @@ describe("/api/status/up", () => {
   it("responds with `true` by default while the database answers", async () => {
     const res = fakeResponse();
 
-    await createUpHandler(() => upDb)({ query: {} }, res);
+    await createUpHandler(upDb)({ query: {} }, res);
 
     expect(res.statusCode).toBe(200);
     expect(res.setHeader).toHaveBeenCalledWith(
@@ -50,7 +46,7 @@ describe("/api/status/up", () => {
   it("responds with JSON for type=json", async () => {
     const res = fakeResponse();
 
-    await createUpHandler(() => upDb)({ query: { type: "JSON" } }, res);
+    await createUpHandler(upDb)({ query: { type: "JSON" } }, res);
 
     expect(res.send).toHaveBeenCalledWith({ up: true });
   });
@@ -58,7 +54,7 @@ describe("/api/status/up", () => {
   it("responds with a shields.io badge for type=shields", async () => {
     const res = fakeResponse();
 
-    await createUpHandler(() => upDb)({ query: { type: "shields" } }, res);
+    await createUpHandler(upDb)({ query: { type: "shields" } }, res);
 
     expect(res.send).toHaveBeenCalledWith({
       schemaVersion: 1,
@@ -72,7 +68,7 @@ describe("/api/status/up", () => {
   it("reports down with 503 when the database fails", async () => {
     const res = fakeResponse();
 
-    await createUpHandler(() => downDb)({ query: {} }, res);
+    await createUpHandler(downDb)({ query: {} }, res);
 
     expect(res.statusCode).toBe(503);
     expect(res.setHeader).toHaveBeenCalledWith("Cache-Control", "no-store");
@@ -86,7 +82,7 @@ describe("/api/status/up", () => {
   it("reports down in a badge with 200, which shields.io needs to render it", async () => {
     const res = fakeResponse();
 
-    await createUpHandler(() => downDb)({ query: { type: "shields" } }, res);
+    await createUpHandler(downDb)({ query: { type: "shields" } }, res);
 
     expect(res.statusCode).toBe(200);
     expect(res.send).toHaveBeenCalledWith({
@@ -107,21 +103,15 @@ describe("/api/status/up", () => {
     expect(res.send).toHaveBeenCalledWith({ up: false });
   });
 
-  it("reports down when the database doesn't answer within 5 s", async () => {
-    vi.useFakeTimers();
-    try {
-      const res = fakeResponse();
-      const hanging = fakeDb(() => new Promise(() => undefined));
+  it("reports down after the bounded probe times out", async () => {
+    const res = fakeResponse();
+    const check = () =>
+      Promise.reject(new Error("health check: database timeout"));
 
-      const handled = createUpHandler(() => hanging)({ query: {} }, res);
-      await vi.advanceTimersByTimeAsync(5000);
-      await handled;
+    await createUpHandler(check)({ query: {} }, res);
 
-      expect(res.statusCode).toBe(503);
-      expect(res.send).toHaveBeenCalledWith(false);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(res.statusCode).toBe(503);
+    expect(res.send).toHaveBeenCalledWith(false);
   });
 });
 
