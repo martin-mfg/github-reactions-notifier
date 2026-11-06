@@ -11,6 +11,14 @@ export interface WriteContext {
   kind: string;
   /** The channel's target, such as `owner/repo#number`, once known. */
   target?: string | null;
+  /** The dispatch bucket's level right after this write took its token (§12). */
+  bucketLevel?: number;
+}
+
+/** A request's outcome, as logged: its method and how long it took. */
+interface RequestTiming {
+  method: string;
+  durationMs: number;
 }
 
 /** What the dispatcher should do after one write (§12's table). */
@@ -38,17 +46,19 @@ const PERMANENT_STATUSES = new Set([403, 404, 410]);
  * @template T Shape of the response body.
  * @param outcome The write's outcome.
  * @param context The write, for logs.
+ * @param timing The request's method and duration, for logs.
  * @returns What to do next.
  */
 export const classifyWrite = <T>(
   outcome: GitHubOutcome<T>,
   context: WriteContext,
+  timing?: RequestTiming,
 ): WriteResult<T> => {
   if (outcome.kind === "ok") {
     return { kind: "ok", data: outcome.data };
   }
   const { status, errorTypes, message } = outcome.details;
-  const logged = { ...context, status, errorTypes, message };
+  const logged = { ...context, ...timing, status, errorTypes, message };
   if (outcome.kind === "rate-limited") {
     logger.error("ALERT: machine account hit a rate limit", {
       ...logged,
@@ -63,7 +73,10 @@ export const classifyWrite = <T>(
   }
   if (outcome.kind === "failed") {
     if (status === null || status >= 500) {
-      logger.log(outcome.timedOut ? "write timed out" : "write failed", logged);
+      logger.warn(
+        outcome.timedOut ? "write timed out" : "write failed",
+        logged,
+      );
       return { kind: "transient" };
     }
     if (PERMANENT_STATUSES.has(status)) {
@@ -78,6 +91,7 @@ export const classifyWrite = <T>(
 /**
  * Sends one write on the mutation-safe path, aborted after the request timeout, and
  * classifies it. It never retries: an ambiguous write is the dispatcher's to settle (§12).
+ * Every request's method and duration are logged, a success's as `machine account request`.
  *
  * @template T Shape of the response body.
  * @param request The write, without its timeout.
@@ -93,11 +107,23 @@ export const sendWrite = async <T>(
   send: (
     request: MutationRequest,
   ) => Promise<GitHubOutcome<T>> = mutationRequest,
-): Promise<WriteResult<T>> =>
-  classifyWrite(
-    await send({
-      ...request,
-      timeoutMs: config.requestTimeoutSeconds * 1000,
-    }),
-    context,
-  );
+): Promise<WriteResult<T>> => {
+  const startedAt = performance.now();
+  const outcome = await send({
+    ...request,
+    timeoutMs: config.requestTimeoutSeconds * 1000,
+  });
+  const timing = {
+    method: request.method,
+    durationMs: Math.round(performance.now() - startedAt),
+  };
+  if (outcome.kind === "ok") {
+    logger.log("machine account request", {
+      ...context,
+      ...timing,
+      path: request.path,
+      status: outcome.details.status,
+    });
+  }
+  return classifyWrite(outcome, context, timing);
+};

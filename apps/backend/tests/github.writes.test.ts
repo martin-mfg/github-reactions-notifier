@@ -71,12 +71,15 @@ describe("classifyWrite", () => {
   });
 
   it.each([
-    ["a 5xx", failed(502)],
-    ["a network error", failed(null, "socket hang up")],
-    ["a timeout", failed(null, "request timed out", true)],
-  ])("retries %s", (_, outcome) => {
+    ["a 5xx", failed(502), "write failed"],
+    ["a network error", failed(null, "socket hang up"), "write failed"],
+    ["a timeout", failed(null, "request timed out", true), "write timed out"],
+  ])("retries %s and logs it as a warning", (_, outcome, logged) => {
     expect(classifyWrite(outcome, context)).toEqual({ kind: "transient" });
-    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+      logged,
+      expect.objectContaining({ job: "job-1" }),
+    );
   });
 
   it.each([404, 410, 403])(
@@ -133,6 +136,15 @@ describe("sendWrite", () => {
     );
 
     expect(result).toEqual({ kind: "transient" });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "write failed",
+      expect.objectContaining({
+        ...context,
+        method: "POST",
+        durationMs: expect.any(Number) as number,
+        status: 502,
+      }),
+    );
     expect(send).toHaveBeenCalledExactlyOnceWith({
       method: "POST",
       path: "/repos/grn/inbox/issues/1/comments",
@@ -140,5 +152,36 @@ describe("sendWrite", () => {
       body: { body: "hi" },
       timeoutMs: 5000,
     });
+  });
+
+  it("logs a successful request with its duration", async () => {
+    const send = vi.fn(
+      (_request: MutationRequest): Promise<GitHubOutcome<unknown>> =>
+        Promise.resolve({
+          kind: "ok",
+          data: { id: 7 },
+          errors: [],
+          details: details(201),
+        }),
+    );
+
+    const result = await sendWrite(
+      { method: "GET", path: "/user", token: "machine" },
+      context,
+      defaultConfig,
+      send,
+    );
+
+    expect(result).toEqual({ kind: "ok", data: { id: 7 } });
+    expect(logger.log).toHaveBeenCalledExactlyOnceWith(
+      "machine account request",
+      {
+        ...context,
+        method: "GET",
+        path: "/user",
+        status: 201,
+        durationMs: expect.any(Number) as number,
+      },
+    );
   });
 });

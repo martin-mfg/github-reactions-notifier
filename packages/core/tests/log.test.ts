@@ -8,6 +8,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const prefix = { log: "", warn: "GRN-PROBLEM ", error: "GRN-PROBLEM " };
+
 describe("logger", () => {
   it.each(["log", "warn", "error"] as const)(
     "redacts every OAuth token in %s output",
@@ -22,7 +24,22 @@ describe("logger", () => {
       );
 
       expect(output).toHaveBeenCalledExactlyOnceWith(
-        "first=[REDACTED]; second=[REDACTED] Bearer [REDACTED]",
+        `${prefix[level]}first=[REDACTED]; second=[REDACTED] Bearer [REDACTED]`,
+      );
+    },
+  );
+
+  it.each(["warn", "error"] as const)(
+    "starts every %s line with the problem keyword, keeping placeholders working",
+    (level) => {
+      const output = vi
+        .spyOn(console, level)
+        .mockImplementation(() => undefined);
+
+      logger[level]("status=%d", 503, { job: "j1" });
+
+      expect(output).toHaveBeenCalledExactlyOnceWith(
+        `GRN-PROBLEM ${format("status=%d", 503, { job: "j1" })}`,
       );
     },
   );
@@ -59,7 +76,7 @@ describe("logger", () => {
       .replaceAll("gho_Header456", "[REDACTED]")
       .replaceAll("gho_Cause789", "[REDACTED]")
       .replaceAll("gho_Error123", "[REDACTED]");
-    expect(output).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(output).toHaveBeenCalledExactlyOnceWith(`GRN-PROBLEM ${expected}`);
     expect(expected).not.toContain("gho_");
     expect(error.message).toBe("network failure gho_Error123");
     expect(error.cause).toBe(cause);
@@ -88,7 +105,7 @@ describe("logger", () => {
     logger.warn("request failed: %d", 503, details);
 
     expect(output).toHaveBeenCalledExactlyOnceWith(
-      format("request failed: %d", 503, details),
+      `GRN-PROBLEM ${format("request failed: %d", 503, details)}`,
     );
   });
 });

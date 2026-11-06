@@ -171,6 +171,7 @@ export const runThreadScans = async (
       createGraphQLFetcher(buildThreadScanDocument(rows.length), "bearer"),
     variables,
     {
+      query: "threadScan",
       isExpectedError: isMissingThread,
       validate: (data) => validThreadScans(data, rows.length),
     },
@@ -222,7 +223,7 @@ export const runThreadScans = async (
     pages.filter((page) => page.step.kind === kind).length;
   for (const { row, step } of pages) {
     if (step.kind === "drop") {
-      logger.log("thread scan dropped: the thread is gone", {
+      logger.warn("thread scan dropped: the thread is gone", {
         ...context,
         thread: row.thread_node_id,
       });

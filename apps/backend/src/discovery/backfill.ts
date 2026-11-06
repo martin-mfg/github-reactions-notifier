@@ -237,6 +237,7 @@ export const runBackfill = async (
       }),
     },
     {
+      query: "backfill",
       isExpectedError: (error) => hintErrorIndex(error) !== undefined,
       validate: validBackfill,
     },

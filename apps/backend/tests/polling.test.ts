@@ -563,11 +563,11 @@ describe("runPoll", () => {
       expect(row.checked_ago).toBeLessThan(5);
     }
     expect((await events()).map((row) => row.node_id)).toEqual(["I_ok"]);
-    expect(logger.log).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledWith(
       "poll: item missing, skipped",
       expect.objectContaining({ item: "I_gone", query: "probe" }),
     );
-    expect(logger.log).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledWith(
       "poll: item missing, skipped",
       expect.objectContaining({ item: "I_vanished", query: "drill-down" }),
     );

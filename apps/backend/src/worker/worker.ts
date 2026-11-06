@@ -66,19 +66,20 @@ const increment = <K extends string>(
  * @param deps The worker's dependencies.
  * @param lease The leased job.
  * @param stats The counters to update.
+ * @returns The task that ran, or `noToken`.
  * @throws {LeaseLostError} If the lease was lost.
  */
 const runSyncJob = async (
   deps: WorkerDeps,
   lease: Lease,
   stats: WorkerStats,
-): Promise<void> => {
+): Promise<SyncTask["kind"] | "noToken"> => {
   const { db, cipher, siteUrl, config } = deps;
   const stored = await loadToken(db, lease.userId, cipher);
   if (!stored) {
     await withLease(db, lease, (client) => releaseSync(client, lease));
     increment(stats.syncTasks, "noToken");
-    return;
+    return "noToken";
   }
   const task = await runSyncTask({
     db,
@@ -89,6 +90,7 @@ const runSyncJob = async (
     ...(config && { config }),
   });
   increment(stats.syncTasks, task.kind);
+  return task.kind;
 };
 
 /**
@@ -99,6 +101,7 @@ const runSyncJob = async (
  *
  * A job that throws keeps its lease, so the reaper retries it and alerts on repeats (§7.3);
  * the worker goes on with the next one. A failed claim ends the invocation. It never throws.
+ * Each job's result and duration are logged as `job finished` (NFR-7).
  *
  * @param deps The worker's dependencies.
  * @returns The invocation's counters, also logged.
@@ -148,32 +151,41 @@ export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
     stats.claims[lease.kind] += 1;
     order = lease.kind === "sync" ? ["deliver", "sync"] : ["sync", "deliver"];
     const context = { job: lease.id, user: lease.userId, kind: lease.kind };
+    const jobStartedAt = now();
+    let result: string;
     try {
       if (lease.kind === "sync") {
-        await runSyncJob(deps, lease, stats);
+        result = await runSyncJob(deps, lease, stats);
       } else {
-        increment(
-          stats.deliveries,
-          await runDeliver({
-            db: deps.db,
-            lease,
-            machine: deps.machine,
-            ...(deps.config && { config: deps.config }),
-          }),
-        );
+        const delivered = await runDeliver({
+          db: deps.db,
+          lease,
+          machine: deps.machine,
+          ...(deps.config && { config: deps.config }),
+        });
+        increment(stats.deliveries, delivered);
+        result = delivered;
       }
     } catch (error) {
       if (error instanceof LeaseLostError) {
         stats.leasesLost += 1;
+        result = "lease-lost";
         logger.warn("worker: lease lost", context);
       } else {
         stats.errors += 1;
+        result = "error";
         logger.error("worker: job failed, left for the reaper", {
           ...context,
           error,
         });
       }
     }
+    // the job's wall-clock: one sync task (§15's serial-poll time) or one delivery
+    logger.log("job finished", {
+      ...context,
+      result,
+      durationMs: Math.round(now() - jobStartedAt),
+    });
   }
 
   stats.durationSeconds = Math.round((now() - startedAt) / 1000);

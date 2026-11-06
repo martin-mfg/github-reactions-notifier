@@ -37,6 +37,7 @@ beforeEach(async () => {
   await testDb.reset();
   vi.restoreAllMocks();
   vi.spyOn(logger, "log").mockImplementation(() => undefined);
+  vi.spyOn(logger, "warn").mockImplementation(() => undefined);
   vi.spyOn(logger, "error").mockImplementation(() => undefined);
 });
 
@@ -124,6 +125,42 @@ describe("/api/cron", () => {
     });
   });
 
+  it("logs the dispatch bucket and the sync jobs the budget holds back", async () => {
+    await signIn(
+      db,
+      { id: "U_alice", login: "alice", createdAt: "2015-01-01T00:00:00Z" },
+      "gho_alice",
+      { cipher, siteUrl: env.siteUrl },
+    );
+    await db.query(
+      "UPDATE jobs SET run_at = now() - interval '1 minute' WHERE kind = 'sync'",
+    );
+    await db.query(
+      `INSERT INTO rate_limit_state (user_id, limit_, used, reset_at)
+       VALUES ('U_alice', 5000, 4900, now() + interval '30 minutes')`,
+    );
+    const { handler } = setUp();
+
+    await handler(request(`Bearer ${SECRET}`), fakeResponse());
+
+    expect(logger.log).toHaveBeenCalledWith("dispatch bucket", {
+      bucketLevel: expect.any(Number) as number,
+    });
+    expect(logger.log).toHaveBeenCalledWith(
+      "budget guard: sync jobs held back",
+      {
+        jobs: [
+          {
+            user: "U_alice",
+            limit: 5000,
+            used: 4900,
+            resetAt: expect.any(Date) as Date,
+          },
+        ],
+      },
+    );
+  });
+
   it("runs `workersPerCron` workers", async () => {
     const config = { ...defaultConfig, workersPerCron: 3 };
     const { handler, runWorker } = setUp({ config });
@@ -146,6 +183,10 @@ describe("/api/cron", () => {
 
     expect(logger.error).toHaveBeenCalledWith(
       "cron: reaping failed",
+      expect.anything(),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      "cron: reading the queue status failed",
       expect.anything(),
     );
     expect(runWorker).toHaveBeenCalled();

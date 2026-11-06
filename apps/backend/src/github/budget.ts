@@ -12,6 +12,44 @@ export interface BudgetState {
   resetAt: Date;
 }
 
+/** The guard's verdict, with the numbers behind it for logs. */
+export interface BudgetVerdict {
+  hasRoom: boolean;
+  /** Absent without a stored state or after a rollover, when nothing counts as spent. */
+  allowance?: number;
+  remaining?: number;
+}
+
+/**
+ * §8's guard with its numbers. See {@link budgetHasRoom}.
+ *
+ * @param state The stored bucket, or `null`.
+ * @param now The current time (Postgres `now()`).
+ * @param config Tunables: `TARGET`, `RESERVE` and `CLOCK_MARGIN`.
+ * @returns The verdict.
+ */
+export const evaluateBudget = (
+  state: BudgetState | null,
+  now: Date,
+  config: Config = defaultConfig,
+): BudgetVerdict => {
+  if (!state) {
+    return { hasRoom: true };
+  }
+  const secondsToReset = (state.resetAt.getTime() - now.getTime()) / 1000;
+  if (-secondsToReset > config.clockMarginSeconds) {
+    return { hasRoom: true };
+  }
+  const elapsed = 1 - secondsToReset / 3600;
+  const allowance = config.budgetTarget * state.limit * elapsed - state.used;
+  const remaining = state.limit - state.used;
+  return {
+    hasRoom: allowance > 0 && remaining > config.budgetReserve,
+    allowance: Math.round(allowance),
+    remaining,
+  };
+};
+
 /**
  * §8's guard, evaluated before each request. It mirrors the `sync` due rule (§7.2) in
  * `jobs/queue.ts`, which applies it at claim time.
@@ -30,18 +68,44 @@ export const budgetHasRoom = (
   state: BudgetState | null,
   now: Date,
   config: Config = defaultConfig,
-): boolean => {
-  if (!state) {
-    return true;
+): boolean => evaluateBudget(state, now, config).hasRoom;
+
+/** The user's stored bucket and Postgres' clock, as the guard reads them. */
+export interface BudgetReading {
+  state: BudgetState | null;
+  now: Date;
+}
+
+/**
+ * Reads the user's stored bucket and Postgres' clock (§7.4).
+ *
+ * @param db Pool or client to read with.
+ * @param userId The user whose token is about to be used.
+ * @returns The reading.
+ */
+export const readBudget = async (
+  db: Queryable,
+  userId: string,
+): Promise<BudgetReading> => {
+  const { rows } = await db.query<{
+    now: Date;
+    limit_: number | null;
+    used: number | null;
+    reset_at: Date | null;
+  }>(
+    `SELECT now() AS now, r.limit_, r.used, r.reset_at
+     FROM (SELECT 1) AS one LEFT JOIN rate_limit_state r ON r.user_id = $1`,
+    [userId],
+  );
+  const row = rows[0];
+  if (!row) {
+    throw new Error("readBudget: no row");
   }
-  const secondsToReset = (state.resetAt.getTime() - now.getTime()) / 1000;
-  if (-secondsToReset > config.clockMarginSeconds) {
-    return true;
-  }
-  const elapsed = 1 - secondsToReset / 3600;
-  const allowance = config.budgetTarget * state.limit * elapsed - state.used;
-  const remaining = state.limit - state.used;
-  return allowance > 0 && remaining > config.budgetReserve;
+  const state =
+    row.limit_ !== null && row.used !== null && row.reset_at !== null
+      ? { limit: row.limit_, used: row.used, resetAt: row.reset_at }
+      : null;
+  return { state, now: row.now };
 };
 
 /**
@@ -57,25 +121,8 @@ export const checkBudget = async (
   userId: string,
   config: Config = defaultConfig,
 ): Promise<boolean> => {
-  const { rows } = await db.query<{
-    now: Date;
-    limit_: number | null;
-    used: number | null;
-    reset_at: Date | null;
-  }>(
-    `SELECT now() AS now, r.limit_, r.used, r.reset_at
-     FROM (SELECT 1) AS one LEFT JOIN rate_limit_state r ON r.user_id = $1`,
-    [userId],
-  );
-  const row = rows[0];
-  if (!row) {
-    throw new Error("checkBudget: no row");
-  }
-  const state =
-    row.limit_ !== null && row.used !== null && row.reset_at !== null
-      ? { limit: row.limit_, used: row.used, resetAt: row.reset_at }
-      : null;
-  return budgetHasRoom(state, row.now, config);
+  const { state, now } = await readBudget(db, userId);
+  return budgetHasRoom(state, now, config);
 };
 
 /**

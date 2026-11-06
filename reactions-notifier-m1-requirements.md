@@ -1188,6 +1188,17 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
       retries. The header has whole seconds, so its second's midpoint is compared. The offset
       is accurate to about ±0.5 s plus the response's latency. A failed check logs a warning
       and never fails the request.
+    - Every `warn` and `error` line starts with `GRN-PROBLEM` (added by the shared logger), so
+      one search finds every problem. Info lines that report problems (a missing poll item, a
+      gone thread, a transient write failure, a rescued lease, a dispatcher pause) are warnings.
+    - Durations: every GraphQL query logs its `query` name and `durationMs`; every
+      machine-account request logs its `method` and `durationMs` (a success as `machine account
+      request`); every job logs `job finished` with its `result` and `durationMs`.
+    - The budget guard logs `budget guard: request refused` when it stops a query, and each cron
+      run logs `budget guard: sync jobs held back` for the jobs the claim skips for budget. Each
+      cron run logs `dispatch bucket` (`bucketLevel`, `bucketPausedUntil`); every write logs the
+      level after taking its token (`bucketLevel`), and a missing token logs
+      `dispatcher: no bucket token, job released`.
     - The health endpoint reports whether `SELECT 1` succeeds within 5 s, in the same three
       formats as github-stats-extended, with `Cache-Control: no-store`. Unlike
       github-stats-extended, it answers `503` while down, so monitors need no keyword match.

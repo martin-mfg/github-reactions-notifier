@@ -15,6 +15,8 @@ import {
   LeaseLostError,
   claimJob,
   deleteJob,
+  findBudgetHeldJobs,
+  readDispatchBucket,
   reapExpiredLeases,
   releaseDeliver,
   releaseSync,
@@ -434,14 +436,14 @@ describe("reaper", () => {
        WHERE kind = 'sync'`,
       [expired],
     );
-    const log = vi.spyOn(logger, "log").mockImplementation(() => undefined);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
 
     const rescued = await reapExpiredLeases(db);
 
     expect(rescued).toStrictEqual([
       { id: expired, kind: "sync", userId: "U_a", attempts: 1 },
     ]);
-    expect(log).toHaveBeenCalledWith("lease rescued", rescued[0]);
+    expect(warn).toHaveBeenCalledWith("lease rescued", rescued[0]);
     const row = await jobRow(expired);
     expect(row?.locked_by).toBeNull();
     // 1 minute × 2^1
@@ -590,6 +592,49 @@ describe("claiming deliver jobs", () => {
       await insertJob("deliver", "U_b", "-2 minutes", { body: "b" });
       await setBucket(1, "30 seconds");
       expect(await claim("deliver")).toBeNull();
+    });
+  });
+});
+
+describe("queue status readers", () => {
+  it("finds exactly the sync jobs the budget holds back", async () => {
+    await insertUser("U_held");
+    await insertUser("U_room");
+    await insertUser("U_revoked", "revoked");
+    await insertUser("U_later");
+    await insertJob("sync", "U_held");
+    await insertJob("sync", "U_room");
+    await insertJob("sync", "U_revoked");
+    await insertJob("sync", "U_later", "1 minute");
+    // half the window gone: allowance is 0.8 × 5000 × 0.5 − 4000 < 0
+    await setRateLimit("U_held", 4000, "30 minutes");
+    await setRateLimit("U_room", 10, "30 minutes");
+    await setRateLimit("U_revoked", 4000, "30 minutes");
+    await setRateLimit("U_later", 4000, "30 minutes");
+
+    expect(await findBudgetHeldJobs(db)).toStrictEqual([
+      {
+        user: "U_held",
+        limit: 5000,
+        used: 4000,
+        resetAt: expect.any(Date) as Date,
+      },
+    ]);
+    // the claim agrees: only U_room is due
+    expect((await claim("sync"))?.userId).toBe("U_room");
+    expect(await claim("sync")).toBeNull();
+  });
+
+  it("reads the bucket refilled, and its stored level while paused", async () => {
+    await setBucket(2, "-1 hour");
+    expect(await readDispatchBucket(db)).toStrictEqual({
+      bucketLevel: defaultConfig.dispatchCapacity,
+    });
+
+    await setBucket(1, "5 minutes");
+    expect(await readDispatchBucket(db)).toStrictEqual({
+      bucketLevel: 1,
+      bucketPausedUntil: expect.any(Date) as Date,
     });
   });
 });

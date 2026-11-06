@@ -1,6 +1,7 @@
 /**
  * @file The scheduler (§7.1). Vercel Cron calls `/api/cron` every minute with
- * `Authorization: Bearer $CRON_SECRET`. Each run reaps expired leases, then runs
+ * `Authorization: Bearer $CRON_SECRET`. Each run reaps expired leases, logs the queue's
+ * status, then runs
  * `workersPerCron` worker loops in this invocation and answers once they all exit, shortly
  * before `maxDuration`. Overlapping runs keep about ten workers alive. It makes no GitHub
  * calls itself and enqueues nothing.
@@ -16,7 +17,11 @@ import { defaultConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import type { Database } from "./db.ts";
 import { machineAccountFromEnv } from "./inbox/dispatcher.ts";
-import { reapExpiredLeases } from "./jobs/queue.ts";
+import {
+  findBudgetHeldJobs,
+  readDispatchBucket,
+  reapExpiredLeases,
+} from "./jobs/queue.ts";
 import { runWorker } from "./worker/worker.ts";
 import type { WorkerDeps, WorkerStats } from "./worker/worker.ts";
 
@@ -40,6 +45,26 @@ const isAuthorized = (req: ApiRequest, secret: string): boolean => {
   const given = Buffer.from(header);
   const expected = Buffer.from(`Bearer ${secret}`);
   return given.length === expected.length && timingSafeEqual(given, expected);
+};
+
+/**
+ * Logs, once per cron run, what the claims skip silently: the dispatch bucket's level (§12)
+ * and the `sync` jobs held back only by their user's budget (§8). A failure is logged and
+ * doesn't stop the run.
+ *
+ * @param db Pool to read with.
+ * @param config Tunables for the due rules.
+ */
+const logQueueStatus = async (db: Database, config: Config): Promise<void> => {
+  try {
+    logger.log("dispatch bucket", await readDispatchBucket(db, config));
+    const held = await findBudgetHeldJobs(db, config);
+    if (held.length > 0) {
+      logger.log("budget guard: sync jobs held back", { jobs: held });
+    }
+  } catch (error) {
+    logger.error("cron: reading the queue status failed", { error });
+  }
 };
 
 /**
@@ -86,6 +111,7 @@ export const createCronHandler =
     } catch (error) {
       logger.error("cron: reaping failed", { error });
     }
+    await logQueueStatus(db, config);
 
     const run = deps.runWorker ?? runWorker;
     const workers = await Promise.all(

@@ -7,7 +7,12 @@ import type { Database, Queryable } from "../db.ts";
 import { checkClockOffset } from "../github/clock.ts";
 import { sendWrite } from "../github/writes.ts";
 import type { WriteContext, WriteResult } from "../github/writes.ts";
-import { deleteJob, releaseDeliver, withLease } from "../jobs/queue.ts";
+import {
+  deleteJob,
+  readDispatchBucket,
+  releaseDeliver,
+  withLease,
+} from "../jobs/queue.ts";
 import type { Lease } from "../jobs/queue.ts";
 import { finishDigest, renderDigest } from "../pipeline/digest.ts";
 
@@ -284,16 +289,21 @@ const findMarker = async (
 
 /**
  * Takes a bucket token right before posting, in a fenced transaction that also records the
- * first attempt (§12). Without a token the job is released unchanged.
+ * first attempt (§12). Without a token the job is released unchanged, and the bucket's level
+ * is logged.
  *
  * @param session The leased job.
- * @returns Whether a token was taken.
+ * @param context The job, for logs.
+ * @returns The bucket's level after taking the token, or `null` if there was none.
  */
-const takeToken = (session: DeliverSession): Promise<boolean> => {
+const takeToken = (
+  session: DeliverSession,
+  context: WriteContext,
+): Promise<number | null> => {
   const config = session.config ?? defaultConfig;
   const { lease } = session;
   return withLease(session.db, lease, async (client) => {
-    const { rowCount } = await client.query(
+    const { rows } = await client.query<{ level: number }>(
       `UPDATE dispatch_bucket
        SET level = least(
              $1::double precision,
@@ -306,12 +316,19 @@ const takeToken = (session: DeliverSession): Promise<boolean> => {
            $1::double precision,
            level + $2::double precision
              * extract(epoch FROM now() - level_at)::double precision
-         ) >= 1`,
+         ) >= 1
+       RETURNING level`,
       [config.dispatchCapacity, config.dispatchRatePerHour / 3600],
     );
-    if (rowCount !== 1) {
+    const taken = rows[0];
+    if (!taken) {
+      const bucket = await readDispatchBucket(client, config);
+      logger.log("dispatcher: no bucket token, job released", {
+        ...context,
+        ...bucket,
+      });
       await releaseDeliver(client, lease);
-      return false;
+      return null;
     }
     await client.query(
       `UPDATE jobs
@@ -320,7 +337,7 @@ const takeToken = (session: DeliverSession): Promise<boolean> => {
        WHERE id = $1`,
       [lease.id],
     );
-    return true;
+    return Math.round(taken.level * 100) / 100;
   });
 };
 
@@ -409,7 +426,7 @@ const settleFailure = (
           config.clockMarginSeconds,
         ],
       );
-      logger.log("dispatcher paused", { ...context, until: rows[0]?.until });
+      logger.warn("dispatcher paused", { ...context, until: rows[0]?.until });
       await releaseDeliver(client, lease);
       return "retrying";
     }
@@ -523,9 +540,11 @@ export const runDeliver = async (
     }
   }
 
-  if (!(await takeToken(session))) {
+  const bucketLevel = await takeToken(session, context);
+  if (bucketLevel === null) {
     return "waiting";
   }
+  context.bucketLevel = bucketLevel;
   const result = await sendWrite<unknown>(
     message.kind === "opening"
       ? {

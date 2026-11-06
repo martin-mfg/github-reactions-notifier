@@ -44,15 +44,16 @@ interface JobRow {
   attempts: number;
 }
 
-/**
- * A `sync` job is due when its user's token is active and their GraphQL budget has room
- * (§7.2, §8). Without a stored `rate_limit_state` row nothing has been spent yet.
- * Parameters: $1 = CLOCK_MARGIN (s), $2 = TARGET, $3 = RESERVE.
- */
-const SYNC_DUE = `
+/** A `sync` job that is due except, perhaps, for its user's budget. */
+const SYNC_READY = `
   j.kind = 'sync' AND j.locked_by IS NULL AND j.run_at <= now()
-  AND u.token_status = 'active'
-  AND (
+  AND u.token_status = 'active'`;
+
+/**
+ * The user's GraphQL budget has room (§8). Without a stored `rate_limit_state` row nothing has
+ * been spent yet. Parameters: $1 = CLOCK_MARGIN (s), $2 = TARGET, $3 = RESERVE.
+ */
+const BUDGET_HAS_ROOM = `(
     r.user_id IS NULL
     -- the window has rolled over, so treat used as 0
     OR now() > r.reset_at + make_interval(secs => $1::double precision)
@@ -63,6 +64,16 @@ const SYNC_DUE = `
       AND r.limit_ - r.used > $3::double precision
     )
   )`;
+
+/**
+ * A `sync` job is due when its user's token is active and their GraphQL budget has room
+ * (§7.2, §8). Parameters as in {@link BUDGET_HAS_ROOM}.
+ */
+const SYNC_DUE = `${SYNC_READY} AND ${BUDGET_HAS_ROOM}`;
+
+const SYNC_FROM = `jobs j
+    JOIN users u ON u.gh_user_id = j.user_id
+    LEFT JOIN rate_limit_state r ON r.user_id = j.user_id`;
 
 /**
  * A `deliver` job is due when the dispatch bucket holds a token and its last write is at
@@ -101,12 +112,7 @@ const claimSql = (from: string, due: string): string => `
   )
   RETURNING id, kind, user_id, payload, run_at, locked_by, attempts`;
 
-const CLAIM_SYNC = claimSql(
-  `jobs j
-    JOIN users u ON u.gh_user_id = j.user_id
-    LEFT JOIN rate_limit_state r ON r.user_id = j.user_id`,
-  SYNC_DUE,
-);
+const CLAIM_SYNC = claimSql(SYNC_FROM, SYNC_DUE);
 
 const CLAIM_DELIVER = claimSql("jobs j", DELIVER_DUE);
 
@@ -329,8 +335,90 @@ export const reapExpiredLeases = async (
     if (job.attempts >= config.reaperAlertAttempts) {
       logger.error("ALERT: lease rescued repeatedly", job);
     } else {
-      logger.log("lease rescued", job);
+      logger.warn("lease rescued", job);
     }
   }
   return rescued;
+};
+
+/** The dispatch bucket (§12), as logged. */
+export interface DispatchBucketReading {
+  /** Tokens it holds now, refilled; its stored level while paused. */
+  bucketLevel: number;
+  /** The end of a pause (§12), if one is running. */
+  bucketPausedUntil?: Date;
+}
+
+/**
+ * Reads the dispatch bucket's level as the `deliver` due rule sees it (§7.2, §12).
+ *
+ * @param db Pool or client to read with.
+ * @param config Tunables: the bucket's capacity and refill rate.
+ * @returns The bucket's level, and the end of a running pause.
+ */
+export const readDispatchBucket = async (
+  db: Queryable,
+  config: Config = defaultConfig,
+): Promise<DispatchBucketReading> => {
+  const { rows } = await db.query<{
+    level: number;
+    paused_until: Date | null;
+  }>(
+    `SELECT CASE WHEN level_at > now() THEN level
+                 ELSE least(
+                   $1::double precision,
+                   level + $2::double precision
+                     * extract(epoch FROM now() - level_at)::double precision)
+            END AS level,
+            CASE WHEN level_at > now() THEN level_at END AS paused_until
+     FROM dispatch_bucket`,
+    [config.dispatchCapacity, config.dispatchRatePerHour / 3600],
+  );
+  const row = rows[0];
+  if (!row) {
+    throw new Error("readDispatchBucket: the dispatch_bucket row is missing");
+  }
+  return {
+    bucketLevel: Math.round(row.level * 100) / 100,
+    ...(row.paused_until && { bucketPausedUntil: row.paused_until }),
+  };
+};
+
+/** A `sync` job held back only by its user's budget (§8), as logged. */
+interface BudgetHeldJob {
+  user: string;
+  limit: number;
+  used: number;
+  resetAt: Date;
+}
+
+/**
+ * Finds the `sync` jobs that would be due but for their user's budget (§7.2, §8). The claim
+ * skips them silently; this makes the guard's refusals visible.
+ *
+ * @param db Pool or client to read with.
+ * @param config Tunables: `CLOCK_MARGIN`, `TARGET` and `RESERVE`.
+ * @returns The held-back jobs' users and their stored buckets.
+ */
+export const findBudgetHeldJobs = async (
+  db: Queryable,
+  config: Config = defaultConfig,
+): Promise<Array<BudgetHeldJob>> => {
+  const { rows } = await db.query<{
+    user_id: string;
+    limit_: number;
+    used: number;
+    reset_at: Date;
+  }>(
+    `SELECT j.user_id, r.limit_, r.used, r.reset_at FROM ${SYNC_FROM}
+     WHERE ${SYNC_READY} AND NOT ${BUDGET_HAS_ROOM}
+     ORDER BY j.user_id`,
+    [config.clockMarginSeconds, config.budgetTarget, config.budgetReserve],
+  );
+  return rows.map((row) => ({
+    user: row.user_id,
+    limit: row.limit_,
+    used: row.used,
+    resetAt: row.reset_at,
+  }));
 };

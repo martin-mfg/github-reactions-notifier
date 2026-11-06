@@ -921,7 +921,7 @@ describe("runThreadScans", () => {
 
     expect(result).toMatchObject({ ok: true, dropped: 1 });
     expect(await threadScans()).toEqual([]);
-    expect(logger.log).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledWith(
       "thread scan dropped: the thread is gone",
       expect.objectContaining({ thread: "I_gone" }),
     );

@@ -14,7 +14,7 @@ import { renderRevokedNotice } from "../inbox/notices.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
 import type { Lease } from "../jobs/queue.ts";
 
-import { checkBudget, storeRateLimit } from "./budget.ts";
+import { evaluateBudget, readBudget, storeRateLimit } from "./budget.ts";
 import { checkClockOffset } from "./clock.ts";
 
 /** A leased `sync` job and the token it reads with. */
@@ -50,6 +50,8 @@ export type QueryResult<T> =
   | { ok: false; failure: SyncFailure };
 
 interface QueryOptions {
+  /** Which query this is, such as `probe` or `backfill`, for logs. */
+  query?: string;
   /** Checks the query-specific fields before callers may commit progress. */
   validate?: (data: unknown) => boolean;
   /**
@@ -64,10 +66,18 @@ interface MeasuredResult {
   rateLimit: { cost: number } | null;
 }
 
-const describe = (session: SyncSession, details?: ResponseDetails) => ({
+const describe = (
+  session: SyncSession,
+  details?: ResponseDetails,
+  request?: { query?: string | undefined; durationMs?: number | undefined },
+) => ({
   job: session.lease.id,
   user: session.lease.userId,
   kind: session.lease.kind,
+  ...(request?.query !== undefined && { query: request.query }),
+  ...(request?.durationMs !== undefined && {
+    durationMs: request.durationMs,
+  }),
   ...(details && {
     status: details.status,
     errorTypes: details.errorTypes,
@@ -83,7 +93,9 @@ const describe = (session: SyncSession, details?: ResponseDetails) => ({
  * 4. Logs the query's `rateLimit.cost` and alarms above `COST_ALARM`. Logs the offset of the
  *    response's `Date` header (NFR-7).
  *
- * Every response no rule covers is logged as a warning and becomes a transient failure.
+ * Every response no rule covers is logged as a warning and becomes a transient failure. Every
+ * line about a response carries the query's name and the request's `durationMs`. A guard
+ * refusal is logged with the stored bucket.
  *
  * @template TResult The query's result.
  * @template TVariables The query's variables.
@@ -102,13 +114,28 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
 ): Promise<QueryResult<TResult>> => {
   const config = session.config ?? defaultConfig;
   const { db, lease } = session;
-  if (!(await checkBudget(db, lease.userId, config))) {
+  const budget = await readBudget(db, lease.userId);
+  const verdict = evaluateBudget(budget.state, budget.now, config);
+  if (!verdict.hasRoom) {
+    logger.log("budget guard: request refused", {
+      ...describe(session, undefined, { query: options.query }),
+      limit: budget.state?.limit,
+      used: budget.state?.used,
+      resetAt: budget.state?.resetAt,
+      allowance: verdict.allowance,
+      remaining: verdict.remaining,
+    });
     return { ok: false, failure: { kind: "budget" } };
   }
 
+  const startedAt = performance.now();
   const outcome = await userTokenRetryer(fetcher, variables, session.token, {
     timeoutMs: config.requestTimeoutSeconds * 1000,
   });
+  const request = {
+    query: options.query,
+    durationMs: Math.round(performance.now() - startedAt),
+  };
   await checkClockOffset(db, outcome.details.date, describe(session), config);
   const headers = outcome.details.rateLimit;
   if (headers) {
@@ -122,26 +149,32 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
       if (options.validate && !options.validate(outcome.data)) {
         logger.warn(
           "unexpected GraphQL response shape",
-          describe(session, outcome.details),
+          describe(session, outcome.details, request),
         );
         return { ok: false, failure: { kind: "transient" } };
       }
       const cost = outcome.data.rateLimit?.cost;
       if (cost === undefined) {
-        logger.warn("query returned no rateLimit", describe(session));
+        logger.warn(
+          "query returned no rateLimit",
+          describe(session, undefined, request),
+        );
       } else if (cost > config.costAlarm) {
         logger.error("ALERT: query cost above the alarm", {
-          ...describe(session),
+          ...describe(session, undefined, request),
           cost,
         });
       } else {
-        logger.log("query cost", { ...describe(session), cost });
+        logger.log("query cost", {
+          ...describe(session, undefined, request),
+          cost,
+        });
       }
       const isExpected = options.isExpectedError ?? (() => false);
       if (!outcome.errors.every(isExpected)) {
         logger.warn(
           "unexpected GraphQL errors",
-          describe(session, outcome.details),
+          describe(session, outcome.details, request),
         );
         return { ok: false, failure: { kind: "transient" } };
       }
@@ -149,7 +182,7 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
     }
     case "rate-limited":
       logger.warn("rate-limited", {
-        ...describe(session, outcome.details),
+        ...describe(session, outcome.details, request),
         retryAfterSeconds: outcome.retryAfterSeconds,
         resetAt: outcome.resetAt,
       });
@@ -162,12 +195,15 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
         },
       };
     case "unauthorized":
-      logger.log("token revoked or expired", describe(session));
+      logger.log(
+        "token revoked or expired",
+        describe(session, undefined, request),
+      );
       return { ok: false, failure: { kind: "unauthorized" } };
   }
   logger.warn(
     outcome.timedOut ? "request timed out" : "unexpected response",
-    describe(session, outcome.details),
+    describe(session, outcome.details, request),
   );
   return { ok: false, failure: { kind: "transient" } };
 };

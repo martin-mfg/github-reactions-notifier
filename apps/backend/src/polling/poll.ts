@@ -201,6 +201,7 @@ export const runPoll = async (
       createGraphQLFetcher(buildReactionProbeDocument(items.length), "bearer"),
     ids(items),
     {
+      query: "probe",
       isExpectedError: isMissingItem,
       validate: (data) => validReactionPoll(data, items.length),
     },
@@ -252,6 +253,7 @@ export const runPoll = async (
         ),
       ids(toDrill.map((outcome) => outcome.item)),
       {
+        query: "drill-down",
         isExpectedError: isMissingItem,
         validate: (data) => validReactionPoll(data, toDrill.length, true),
       },
@@ -349,7 +351,7 @@ export const runPoll = async (
   const { newReactions, queued } = stored;
 
   for (const { item, query } of missing) {
-    logger.log("poll: item missing, skipped", {
+    logger.warn("poll: item missing, skipped", {
       ...context,
       item: item.node_id,
       query,

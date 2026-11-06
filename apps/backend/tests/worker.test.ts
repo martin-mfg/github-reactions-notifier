@@ -148,6 +148,33 @@ describe("runWorker", () => {
     expect(logger.log).toHaveBeenCalledWith("worker finished", stats);
   });
 
+  it("logs each job's result and duration", async () => {
+    await signUpAlice();
+    const clock = fakeClock();
+    vi.mocked(runSyncTask).mockImplementationOnce(async ({ db, lease }) => {
+      clock.t += 1500;
+      await withLease(db, lease, (client) => releaseSync(client, lease, FAR));
+      return { kind: "backfill", categoryId: "1", score: 1 };
+    });
+
+    await runWorker(deps(clock));
+
+    expect(logger.log).toHaveBeenCalledWith("job finished", {
+      job: expect.any(String) as string,
+      user: "U_alice",
+      kind: "deliver",
+      result: "posted",
+      durationMs: 0,
+    });
+    expect(logger.log).toHaveBeenCalledWith("job finished", {
+      job: expect.any(String) as string,
+      user: "U_alice",
+      kind: "sync",
+      result: "backfill",
+      durationMs: 1500,
+    });
+  });
+
   it("claims a job that became due while it waited", async () => {
     await signUpAlice();
     const clock = fakeClock();

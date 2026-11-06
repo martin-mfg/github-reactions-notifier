@@ -212,11 +212,44 @@ describe("runQuery", () => {
     );
     const fetcher = resolving({ data: viewer(1) });
 
-    expect(await runQuery(session, fetcher, {})).toEqual({
+    expect(await runQuery(session, fetcher, {}, { query: "probe" })).toEqual({
       ok: false,
       failure: { kind: "budget" },
     });
     expect(fetcher).not.toHaveBeenCalled();
+    expect(logger.log).toHaveBeenCalledWith("budget guard: request refused", {
+      job: session.lease.id,
+      user: "U_alice",
+      kind: "sync",
+      query: "probe",
+      limit: 5000,
+      used: 4000,
+      resetAt: expect.any(Date) as Date,
+      allowance: expect.any(Number) as number,
+      remaining: 1000,
+    });
+  });
+
+  it("logs each query's name, cost and duration", async () => {
+    const session = await leasedSession();
+
+    await runQuery(
+      session,
+      resolving({ data: viewer(1) }),
+      {},
+      {
+        query: "discovery",
+      },
+    );
+
+    expect(logger.log).toHaveBeenCalledWith("query cost", {
+      job: session.lease.id,
+      user: "U_alice",
+      kind: "sync",
+      query: "discovery",
+      durationMs: expect.any(Number) as number,
+      cost: 1,
+    });
   });
 
   it("logs an unexpected GraphQL error as a warning and fails transiently", async () => {
@@ -233,6 +266,7 @@ describe("runQuery", () => {
       job: session.lease.id,
       user: "U_alice",
       kind: "sync",
+      durationMs: expect.any(Number) as number,
       status: 200,
       errorTypes: ["SOMETHING_NEW"],
       message: "Something new happened",

@@ -189,6 +189,7 @@ export const runIncrementalDiscovery = async (
     fetcher,
     {},
     {
+      query: "discovery",
       validate: validIncremental,
     },
   );

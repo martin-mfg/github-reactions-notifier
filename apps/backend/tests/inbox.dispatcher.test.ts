@@ -237,6 +237,14 @@ describe("runDeliver: opening", () => {
     const bucket = await pausedFor();
     expect(bucket?.level).toBeCloseTo(9, 0);
     expect(bucket?.paused_for).toBeCloseTo(0, 0);
+    expect(logger.log).toHaveBeenCalledWith(
+      "delivered",
+      expect.objectContaining({
+        job: lease.id,
+        kind: "opening",
+        bucketLevel: expect.closeTo(9, 0) as number,
+      }),
+    );
   });
 
   it("checks GitHub's clock on its responses", async () => {
@@ -381,6 +389,13 @@ describe("runDeliver: comments", () => {
       locked_by: null,
       attempted_at: null,
     });
+    expect(logger.log).toHaveBeenCalledWith(
+      "dispatcher: no bucket token, job released",
+      expect.objectContaining({
+        job: id,
+        bucketLevel: expect.any(Number) as number,
+      }),
+    );
   });
 });
 
