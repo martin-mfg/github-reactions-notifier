@@ -15,6 +15,7 @@ import { validBackfill } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
+import { queueSummaryIfComplete } from "../summary/summary.ts";
 
 import {
   author,
@@ -24,7 +25,7 @@ import {
   rejectForeignViewer,
   taskContext,
 } from "./results.ts";
-import { storeDiscovered } from "./store.ts";
+import { insertPendingSnapshots, storeDiscovered } from "./store.ts";
 import type { DiscoveredItem } from "./store.ts";
 
 type Fetcher = GraphQLFetcherFunction<
@@ -58,9 +59,13 @@ export type BackfillResult =
       status: "stored";
       /** Items the user did not track before. */
       newItems: number;
+      /** `reaction_snapshots` rows this page queued (M1.1 §2.3). */
+      newSnapshots: number;
       /** `thread_scans` rows this page inserted. */
       newThreadScans: number;
       window: WindowChange;
+      /** The backfill summary's job id, if this page completed the subscription (M1.1 §3). */
+      summary: string | null;
     }
   /** `viewer.login` differs from the search's: the page was discarded (§9.2). */
   | { ok: true; status: "login-changed" }
@@ -317,7 +322,7 @@ export const runBackfill = async (
     search.pageInfo.hasNextPage,
   );
 
-  const { newItems, newThreadScans } = await withLease(
+  const { newItems, newSnapshots, newThreadScans, summary } = await withLease(
     session.db,
     lease,
     async (client) => {
@@ -330,6 +335,7 @@ export const runBackfill = async (
         },
         own,
       );
+      const snapshots = await insertPendingSnapshots(client, lease.userId, own);
       // An existing row may have advanced already: the boundary re-read must not reset it.
       const { rowCount } = await client.query(
         `INSERT INTO thread_scans (category_id, thread_node_id, since_at, thread_created_at)
@@ -342,10 +348,17 @@ export const runBackfill = async (
           longThreads.map((thread) => thread.createdAt),
         ],
       );
+      let queued: string | null = null;
       if (windowEnd === null) {
         await client.query(
           "DELETE FROM backfill_windows WHERE category_id = $1 AND window_start = $2",
           [categoryId, window.window_start],
+        );
+        // only removed work can complete the subscription
+        queued = await queueSummaryIfComplete(
+          client,
+          { userId: lease.userId, subscriptionId: window.subscription_id },
+          context,
         );
       } else {
         await client.query(
@@ -355,7 +368,12 @@ export const runBackfill = async (
         );
       }
       await releaseSync(client, lease);
-      return { newItems: found, newThreadScans: rowCount ?? 0 };
+      return {
+        newItems: found,
+        newSnapshots: snapshots,
+        newThreadScans: rowCount ?? 0,
+        summary: queued,
+      };
     },
   );
 
@@ -373,22 +391,27 @@ export const runBackfill = async (
     ...context,
     hits: hits.length,
     newItems,
+    newSnapshots,
     newThreadScans,
     windowEnd: windowEnd?.toISOString() ?? "deleted",
+    ...(summary !== null && { summary }),
   });
   return {
     ok: true,
     status: "stored",
     newItems,
+    newSnapshots,
     newThreadScans,
     window:
       windowEnd === null ? { kind: "deleted" } : { kind: "moved", windowEnd },
+    summary,
   };
 };
 
 /**
  * A category's backfill is complete when it has neither windows nor thread scans left (§9.2).
- * M1 triggers nothing on completion.
+ * The backfill summary waits for its whole subscription, snapshots included (M1.1 §3; see
+ * `queueSummaryIfComplete`).
  *
  * @param client Client inside or outside a transaction.
  * @param categoryId The `subscription_categories.id`.

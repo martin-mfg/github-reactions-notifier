@@ -124,6 +124,28 @@ CREATE TABLE content_sources (
   PRIMARY KEY (user_id, node_id, subscription_id)
 );
 
+-- Per user: each backfilled item's reaction counts, for the backfill summary (M1.1 §2). A row
+-- whose counts are NULL is pending: the snapshot sweep's work queue. Attribution to a
+-- subscription is a join with content_sources.
+CREATE TABLE reaction_snapshots (
+  user_id     text NOT NULL REFERENCES users ON DELETE CASCADE,
+  node_id     text NOT NULL REFERENCES content,
+  retry_at    timestamptz NOT NULL DEFAULT now(),  -- not picked before this
+  thumbs_up   integer,
+  thumbs_down integer,
+  laugh       integer,
+  hooray      integer,
+  confused    integer,
+  heart       integer,
+  rocket      integer,
+  eyes        integer,
+  PRIMARY KEY (user_id, node_id),
+  -- all eight counts are set (snapshot taken) or all are NULL (pending)
+  CHECK (num_nulls(thumbs_up, thumbs_down, laugh, hooray, confused, heart, rocket, eyes) IN (0, 8))
+);
+CREATE INDEX reaction_snapshots_pending
+  ON reaction_snapshots (user_id, retry_at) WHERE thumbs_up IS NULL;
+
 -- Global observed facts. reactor_login is display data as of detection.
 CREATE TABLE reaction_events (
   node_id       text NOT NULL REFERENCES content,

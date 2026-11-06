@@ -57,6 +57,10 @@ export interface Config {
   discoveryWeight: number;
   /** Most items one probe reads, aliased into one query (§9.3). At most 100. */
   probeBatch: number;
+  /** Most items one snapshot task reads, aliased into one query (M1.1 §4.2). At most 100. */
+  snapshotBatch: number;
+  /** A snapshot row whose read failed is not picked again for this long (M1.1 §4.2). */
+  snapshotRetryDelaySeconds: number;
   /**
    * FR-10's batching window: a digest is due this long after it opens, and its successor this
    * long after its own `run_at` (§10).
@@ -103,6 +107,8 @@ export const defaultConfig: Config = {
   scoreExponent: 0.8,
   discoveryWeight: 2,
   probeBatch: 50,
+  snapshotBatch: 50,
+  snapshotRetryDelaySeconds: 60 * 60,
   digestWindowSeconds: 3 * 60,
   workersPerCron: 1,
   idleWaitSeconds: 60,

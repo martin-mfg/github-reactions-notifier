@@ -53,6 +53,11 @@ export type {
   ReactionPollQueryVariables,
   ReactionProbeQuery,
 } from "./graphql/reactionPollDocuments.js";
+export { buildReactionSnapshotDocument } from "./graphql/reactionSnapshotDocument.js";
+export type {
+  ReactionSnapshotQuery,
+  SnapshotItem,
+} from "./graphql/reactionSnapshotDocument.js";
 export { buildThreadScanDocument } from "./graphql/threadScanDocument.js";
 export type {
   ScannedThread,

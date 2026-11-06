@@ -355,6 +355,11 @@ describe("runIncrementalDiscovery", () => {
       "SELECT node_id FROM content_sources ORDER BY node_id",
     );
     expect(sources).toHaveLength(3);
+    // M1.1 §2.3: only backfill and thread scans queue reaction snapshots
+    const { rows: snapshots } = await db.query(
+      "SELECT node_id FROM reaction_snapshots",
+    );
+    expect(snapshots).toEqual([]);
 
     // finding something new resets last_find_at; every run resets last_checked_at
     expect((await category())?.checked_ago).toBeLessThan(5);

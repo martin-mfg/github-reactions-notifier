@@ -466,8 +466,10 @@ describe("runBackfill", () => {
       ok: true,
       status: "stored",
       newItems: 3,
+      newSnapshots: 3,
       newThreadScans: 0,
       window: { kind: "moved", windowEnd: new Date(at(-40)) },
+      summary: null,
     });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(searchedFor(fetcher)).toEqual([
@@ -839,9 +841,11 @@ describe("runThreadScans", () => {
     expect(result).toEqual({
       ok: true,
       newItems: 3,
+      newSnapshots: 3,
       advanced: 1,
       finished: 1,
       dropped: 0,
+      summary: null,
     });
     const since = iso(new Date(Date.parse(at(0)) - 1000).toISOString());
     expect(fetcher.mock.calls[0]?.[0]).toEqual({
@@ -965,5 +969,186 @@ describe("runThreadScans", () => {
       { thread: "I_long", since: iso(at(0)), created: iso(at(-100)) },
     ]);
     expect((await syncJob())?.due_in).toBeCloseTo(300, 0);
+  });
+});
+
+describe("reaction snapshots and the backfill summary (M1.1)", () => {
+  const pendingSnapshots = async () => {
+    const { rows } = await db.query<{ node_id: string }>(
+      "SELECT node_id FROM reaction_snapshots WHERE thumbs_up IS NULL ORDER BY node_id",
+    );
+    return rows.map((row) => row.node_id);
+  };
+
+  const summaries = async () => {
+    const { rows } = await db.query<{ id: string; body: string }>(
+      `SELECT id, payload->>'body' AS body FROM jobs
+       WHERE kind = 'deliver' AND payload->>'body' LIKE '## 📊%'`,
+    );
+    return rows;
+  };
+
+  const SHORT_SUMMARY = "found no issues, pull requests or comments of yours";
+
+  it("queues a pending snapshot for each kept item once, even one incremental discovery tracked first", async () => {
+    const { session, categoryId } = await setUp();
+    // an old comment incremental discovery found because it was edited: tracked, no snapshot
+    await db.query(
+      `INSERT INTO content (node_id, type, repo_full_name, url, title)
+       VALUES ('C_own2', 'IssueComment', 'octo/repo', 'https://github.com/octo/repo/issues/2', 'T')`,
+    );
+    await db.query(
+      `INSERT INTO tracked_content (user_id, node_id, last_event_at, watermark_at)
+       VALUES ('U_alice', 'C_own2', now(), now())`,
+    );
+    await db.query(
+      `INSERT INTO content_sources (user_id, node_id, subscription_id)
+       SELECT 'U_alice', 'C_own2', id FROM subscriptions`,
+    );
+    const page = {
+      hasNextPage: true,
+      hits: [
+        hit("I_own", at(-10), {
+          comments: [comment("C_own", at(-9)), comment("C_bob", at(-8), bob)],
+        }),
+        hit("I_mention", at(-20), {
+          author: bob,
+          comments: [comment("C_bob2", at(-19), bob)],
+        }),
+        hit("PR_bob", at(-30), {
+          type: "PullRequest",
+          author: bob,
+          comments: [comment("C_own2", at(-29))],
+        }),
+      ],
+    };
+
+    expect(
+      await runBackfill(session, categoryId, searching(page)),
+    ).toMatchObject({ ok: true, newItems: 2, newSnapshots: 3, summary: null });
+    expect(await pendingSnapshots()).toEqual(["C_own", "C_own2", "I_own"]);
+
+    // the boundary re-read inserts nothing new
+    expect(
+      await runBackfill(
+        { ...session, lease: await claim() },
+        categoryId,
+        searching(page),
+      ),
+    ).toMatchObject({ ok: true, newItems: 0, newSnapshots: 0 });
+    expect(await pendingSnapshots()).toEqual(["C_own", "C_own2", "I_own"]);
+    expect(await summaries()).toEqual([]);
+  });
+
+  it("holds the summary after the last window while snapshots are pending", async () => {
+    const { session, categoryId } = await setUp();
+
+    expect(
+      await runBackfill(
+        session,
+        categoryId,
+        searching({ hits: [hit("I_own", at(-10))] }),
+      ),
+    ).toMatchObject({ window: { kind: "deleted" }, summary: null });
+    expect(await pendingSnapshots()).toEqual(["I_own"]);
+    expect(await summaries()).toEqual([]);
+  });
+
+  it("queues the shortened summary once, with the last window of a user without content", async () => {
+    const { session, categoryId } = await setUp();
+
+    // a window that only shrinks completes nothing
+    expect(
+      await runBackfill(
+        session,
+        categoryId,
+        searching({
+          hasNextPage: true,
+          hits: [hit("I_mention", at(-10), { author: bob })],
+        }),
+      ),
+    ).toMatchObject({ window: { kind: "moved" }, summary: null });
+    expect(await summaries()).toEqual([]);
+
+    const last = await runBackfill(
+      { ...session, lease: await claim() },
+      categoryId,
+      searching(),
+    );
+
+    expect(last).toMatchObject({ window: { kind: "deleted" } });
+    const notices = await summaries();
+    expect(notices).toHaveLength(1);
+    expect(last.ok && last.status === "stored" && last.summary).toBe(
+      notices[0]?.id,
+    );
+    expect(notices[0]?.body).toContain(SHORT_SUMMARY);
+    expect(notices[0]?.body).toContain(
+      `<!-- grn:${String(notices[0]?.id)} -->`,
+    );
+  });
+
+  it("holds the summary while a thread scan remains, and queues it with the last one", async () => {
+    const { session, categoryId } = await setUp();
+    expect(
+      await runBackfill(
+        session,
+        categoryId,
+        searching({
+          hits: [hit("I_long", at(-10), { author: bob, moreComments: true })],
+        }),
+      ),
+    ).toMatchObject({ window: { kind: "deleted" }, summary: null });
+    expect(await threadScans()).toHaveLength(1);
+
+    // advancing a scan removes nothing
+    expect(
+      await runThreadScans(
+        { ...session, lease: await claim() },
+        categoryId,
+        scanning([thread([comment("C_bob", at(1), bob)], true)]),
+      ),
+    ).toMatchObject({ ok: true, advanced: 1, summary: null });
+    expect(await summaries()).toEqual([]);
+
+    const last = await runThreadScans(
+      { ...session, lease: await claim() },
+      categoryId,
+      scanning([thread([comment("C_bob2", at(2), bob)])]),
+    );
+
+    expect(last).toMatchObject({ ok: true, finished: 1, newSnapshots: 0 });
+    const notices = await summaries();
+    expect(notices).toHaveLength(1);
+    expect(last.ok && last.summary).toBe(notices[0]?.id);
+    expect(notices[0]?.body).toContain(SHORT_SUMMARY);
+  });
+
+  it("queues snapshots for the user's scanned comments only, and holds the summary for them", async () => {
+    const { session, categoryId } = await setUp();
+    await runBackfill(
+      session,
+      categoryId,
+      searching({
+        hits: [hit("I_long", at(-10), { author: bob, moreComments: true })],
+      }),
+    );
+
+    const result = await runThreadScans(
+      { ...session, lease: await claim() },
+      categoryId,
+      scanning([
+        thread([comment("C_mine", at(1)), comment("C_bob", at(2), bob)]),
+      ]),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      finished: 1,
+      newSnapshots: 1,
+      summary: null,
+    });
+    expect(await pendingSnapshots()).toEqual(["C_mine"]);
+    expect(await summaries()).toEqual([]);
   });
 });

@@ -84,3 +84,31 @@ export const storeDiscovered = async (
   );
   return rows.length;
 };
+
+/**
+ * Queues a reaction snapshot for each item, for the backfill summary (M1.1 §2.3): one pending
+ * row per (user, item), `ON CONFLICT DO NOTHING`. The key is "this item has no snapshot yet",
+ * so an item incremental discovery tracked first still gets one. Only backfill and thread
+ * scans call this, in the transaction that stored the items with {@link storeDiscovered}.
+ *
+ * @param client Client inside the task's fenced transaction.
+ * @param userId The user the items were found for.
+ * @param items The items just stored.
+ * @returns How many rows were inserted.
+ */
+export const insertPendingSnapshots = async (
+  client: Queryable,
+  userId: string,
+  items: Array<DiscoveredItem>,
+): Promise<number> => {
+  if (items.length === 0) {
+    return 0;
+  }
+  const { rowCount } = await client.query(
+    `INSERT INTO reaction_snapshots (user_id, node_id)
+     SELECT $1, n FROM unnest($2::text[]) n
+     ON CONFLICT (user_id, node_id) DO NOTHING`,
+    [userId, items.map((item) => item.nodeId)],
+  );
+  return rowCount ?? 0;
+};

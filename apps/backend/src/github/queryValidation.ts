@@ -101,6 +101,51 @@ export const validThreadScans = (value: unknown, count: number): boolean =>
     (node) => object(node) && timeline(node["timelineItems"]),
   );
 
+const reactionGroup: Validator = (value) =>
+  object(value) &&
+  typeof value["content"] === "string" &&
+  object(value["reactors"]) &&
+  Number.isInteger(value["reactors"]["totalCount"]) &&
+  Number(value["reactors"]["totalCount"]) >= 0;
+
+/**
+ * The snapshot sweep's response (M1.1 §4.2). Every alias must be present. An alias that has a
+ * GraphQL error may hold anything: the error decides its row. Any other alias is `null`, an
+ * object without `reactionGroups` (not reactable), or one with `reactionGroups` (`null`, or a
+ * list of `{ content, reactors { totalCount } }`; any `content` string passes, so a new emoji
+ * doesn't fail the batch).
+ *
+ * @param value The response's `data`.
+ * @param count How many `item_<index>` aliases the query has.
+ * @param erred The indexes of the aliases that have errors.
+ * @returns Whether the response is usable.
+ */
+export const validReactionSnapshot = (
+  value: unknown,
+  count: number,
+  erred: ReadonlySet<number>,
+): boolean =>
+  object(value) &&
+  Array.from({ length: count }, (_, index) => index).every((index) => {
+    const alias = `item_${index}`;
+    if (!Object.hasOwn(value, alias)) {
+      return false;
+    }
+    const node = value[alias];
+    if (erred.has(index) || node === null) {
+      return true;
+    }
+    if (!object(node)) {
+      return false;
+    }
+    const groups = node["reactionGroups"];
+    return (
+      !Object.hasOwn(node, "reactionGroups") ||
+      groups === null ||
+      (Array.isArray(groups) && groups.every(reactionGroup))
+    );
+  });
+
 export const validReactionPoll = (
   value: unknown,
   count: number,

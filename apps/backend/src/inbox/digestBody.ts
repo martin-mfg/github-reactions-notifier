@@ -73,7 +73,11 @@ const userLink = (login: string): string =>
     ? `[@${ZWSP}${login}](https://github.com/${login})`
     : plainText(`@${login}`);
 
-const emojiOf = (name: string): string => EMOJI[name] ?? plainText(name);
+/**
+ * @param name A `ReactionContent` value.
+ * @returns Its emoji, or the name as plain text if it is unknown.
+ */
+export const emojiOf = (name: string): string => EMOJI[name] ?? plainText(name);
 
 /**
  * @param parts The parts to list.

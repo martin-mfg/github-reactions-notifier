@@ -17,6 +17,7 @@ import { validThreadScans } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
+import { queueSummaryIfComplete } from "../summary/summary.ts";
 import { scoreSql } from "../sync/score.ts";
 
 import {
@@ -26,7 +27,7 @@ import {
   rejectForeignViewer,
   taskContext,
 } from "./results.ts";
-import { storeDiscovered } from "./store.ts";
+import { insertPendingSnapshots, storeDiscovered } from "./store.ts";
 
 type Fetcher = GraphQLFetcherFunction<
   ThreadScanQuery,
@@ -48,10 +49,14 @@ export type ThreadScanResult =
       ok: true;
       /** Items the user did not track before. */
       newItems: number;
+      /** `reaction_snapshots` rows this scan queued (M1.1 §2.3). */
+      newSnapshots: number;
       /** Threads whose rows advanced, finished (deleted), or were dropped (deleted). */
       advanced: number;
       finished: number;
       dropped: number;
+      /** The backfill summary's job id, if this scan completed the subscription (M1.1 §3). */
+      summary: string | null;
     }
   | { ok: false; failure: SyncFailure };
 
@@ -191,33 +196,47 @@ export const runThreadScans = async (
     ...scanPage(row, data[alias(index)]),
   }));
 
-  const newItems = await withLease(session.db, lease, async (client) => {
-    const found = await storeDiscovered(
-      client,
-      { userId: lease.userId, subscriptionId, categoryId },
-      pages.flatMap((page) =>
-        page.comments
-          .filter((comment) => comment.author?.id === lease.userId)
-          .map(commentItem),
-      ),
-    );
-    for (const { row, step } of pages) {
-      if (step.kind === "advance") {
-        await client.query(
-          `UPDATE thread_scans SET since_at = greatest(since_at, $3)
+  const own = pages.flatMap((page) =>
+    page.comments
+      .filter((comment) => comment.author?.id === lease.userId)
+      .map(commentItem),
+  );
+  const { newItems, newSnapshots, summary } = await withLease(
+    session.db,
+    lease,
+    async (client) => {
+      const found = await storeDiscovered(
+        client,
+        { userId: lease.userId, subscriptionId, categoryId },
+        own,
+      );
+      const snapshots = await insertPendingSnapshots(client, lease.userId, own);
+      for (const { row, step } of pages) {
+        if (step.kind === "advance") {
+          await client.query(
+            `UPDATE thread_scans SET since_at = greatest(since_at, $3)
            WHERE category_id = $1 AND thread_node_id = $2`,
-          [categoryId, row.thread_node_id, step.sinceAt],
-        );
-      } else {
-        await client.query(
-          "DELETE FROM thread_scans WHERE category_id = $1 AND thread_node_id = $2",
-          [categoryId, row.thread_node_id],
-        );
+            [categoryId, row.thread_node_id, step.sinceAt],
+          );
+        } else {
+          await client.query(
+            "DELETE FROM thread_scans WHERE category_id = $1 AND thread_node_id = $2",
+            [categoryId, row.thread_node_id],
+          );
+        }
       }
-    }
-    await releaseSync(client, lease);
-    return found;
-  });
+      // only removed work can complete the subscription
+      const summary = pages.some((page) => page.step.kind !== "advance")
+        ? await queueSummaryIfComplete(
+            client,
+            { userId: lease.userId, subscriptionId },
+            context,
+          )
+        : null;
+      await releaseSync(client, lease);
+      return { newItems: found, newSnapshots: snapshots, summary };
+    },
+  );
 
   const count = (kind: ScanStep["kind"]) =>
     pages.filter((page) => page.step.kind === kind).length;
@@ -245,9 +264,19 @@ export const runThreadScans = async (
     ...context,
     threads: rows.length,
     newItems,
+    newSnapshots,
     advanced,
     finished,
     dropped,
+    ...(summary !== null && { summary }),
   });
-  return { ok: true, newItems, advanced, finished, dropped };
+  return {
+    ok: true,
+    newItems,
+    newSnapshots,
+    advanced,
+    finished,
+    dropped,
+    summary,
+  };
 };

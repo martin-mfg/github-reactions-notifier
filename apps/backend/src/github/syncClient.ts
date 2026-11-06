@@ -52,8 +52,11 @@ export type QueryResult<T> =
 interface QueryOptions {
   /** Which query this is, such as `probe` or `backfill`, for logs. */
   query?: string;
-  /** Checks the query-specific fields before callers may commit progress. */
-  validate?: (data: unknown) => boolean;
+  /**
+   * Checks the query-specific fields before callers may commit progress. It gets the
+   * response's GraphQL errors too, so fields a handled error explains can be excused.
+   */
+  validate?: (data: unknown, errors: Array<GraphQLError>) => boolean;
   /**
    * Accepts GraphQL errors that a rule of §9 covers, such as a missing item's `NOT_FOUND`.
    * Any other error makes the response unexpected (§12).
@@ -146,7 +149,7 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
 
   switch (outcome.kind) {
     case "ok": {
-      if (options.validate && !options.validate(outcome.data)) {
+      if (options.validate && !options.validate(outcome.data, outcome.errors)) {
         logger.warn(
           "unexpected GraphQL response shape",
           describe(session, outcome.details, request),

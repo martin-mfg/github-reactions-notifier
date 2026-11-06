@@ -19,6 +19,7 @@ import { runThreadScans } from "../src/discovery/threadScans.ts";
 import type { SyncSession } from "../src/github/syncClient.ts";
 import { claimJob } from "../src/jobs/queue.ts";
 import { runPoll } from "../src/polling/poll.ts";
+import { runSnapshotSweep } from "../src/summary/snapshotSweep.ts";
 import { chooseSyncTask, runSyncTask } from "../src/sync/schedule.ts";
 import { signIn } from "../src/users/accounts.ts";
 
@@ -33,6 +34,9 @@ vi.mock("../src/discovery/incremental.ts", () => ({
 }));
 vi.mock("../src/discovery/threadScans.ts", () => ({
   runThreadScans: vi.fn(),
+}));
+vi.mock("../src/summary/snapshotSweep.ts", () => ({
+  runSnapshotSweep: vi.fn(),
 }));
 
 let testDb: TestDatabase;
@@ -197,6 +201,94 @@ describe("chooseSyncTask", () => {
   });
 });
 
+describe("chooseSyncTask: the snapshot sweep (M1.1 §4.1)", () => {
+  const subscriptionId = async () => {
+    const { rows } = await db.query<{ id: string }>(
+      "SELECT id::text FROM subscriptions",
+    );
+    return String(rows[0]?.id);
+  };
+
+  /**
+   * Adds pending snapshot rows of tracked items that score high: they waited an hour, their
+   * items are a minute old.
+   *
+   * @param count How many.
+   * @param retryAgo `retry_at`, as an `interval` ago; negative for the future.
+   */
+  const pending = async (count: number, retryAgo = "1 hour") => {
+    for (let index = 0; index < count; index += 1) {
+      const nodeId = `I_snap_${index}`;
+      await track(nodeId, "0 seconds", "1 minute");
+      await db.query(
+        `INSERT INTO content_sources (user_id, node_id, subscription_id)
+         SELECT 'U_alice', $1, id FROM subscriptions`,
+        [nodeId],
+      );
+      await db.query(
+        `INSERT INTO reaction_snapshots (user_id, node_id, retry_at)
+         VALUES ('U_alice', $1, now() - $2::interval)`,
+        [nodeId, retryAgo],
+      );
+    }
+  };
+
+  it("has no snapshot candidate while a backfill window or thread scan remains, even with a full batch pending", async () => {
+    const { categoryId } = await setUp();
+    // a backfill window that scores 0 still beats any snapshot
+    await windowAt("0 seconds", "0 seconds");
+    await pending(60);
+    expect(await choose()).toMatchObject({ kind: "backfill" });
+
+    await db.query("DELETE FROM backfill_windows");
+    await db.query(
+      `INSERT INTO thread_scans (category_id, thread_node_id, since_at, thread_created_at)
+       VALUES ($1, 'I_thread', now(), now())`,
+      [categoryId],
+    );
+    expect(await choose()).toMatchObject({ kind: "threadScan" });
+  });
+
+  it("picks the snapshot sweep once the backfill is finished and a row is eligible", async () => {
+    await setUp();
+    await db.query("DELETE FROM backfill_windows");
+    await pending(1);
+
+    const task = await choose();
+    expect(task).toMatchObject({
+      kind: "snapshot",
+      subscriptionId: await subscriptionId(),
+    });
+    // wait 3600 s / (60 s)^0.8 × w
+    expect(task.kind === "snapshot" && task.score).toBeCloseTo(
+      (3600 / 60 ** 0.8) * 2,
+      0,
+    );
+  });
+
+  it("idles until the first deferred snapshot when it is due before any poll or discovery", async () => {
+    await setUp();
+    await db.query("DELETE FROM backfill_windows");
+    await discovered("1 minute", "1 minute");
+    await pending(1, "-1 minute");
+
+    const task = await choose();
+    expect(task.kind).toBe("idle");
+    expect(
+      task.kind === "idle" && (task.until.getTime() - Date.now()) / 1000,
+    ).toBeCloseTo(60, -1);
+
+    // a later snapshot leaves the wake-up at the discovery
+    await db.query(
+      "UPDATE reaction_snapshots SET retry_at = now() + interval '1 hour'",
+    );
+    const later = await choose();
+    expect(
+      later.kind === "idle" && (later.until.getTime() - Date.now()) / 1000,
+    ).toBeCloseTo(180, -1);
+  });
+});
+
 describe("runSyncTask", () => {
   it("runs the top task", async () => {
     const { session, categoryId } = await setUp();
@@ -220,6 +312,23 @@ describe("runSyncTask", () => {
     await track("I_1", "1 day", "1 second");
     await runSyncTask(session);
     expect(runPoll).toHaveBeenCalledWith(session);
+
+    await db.query("DELETE FROM backfill_windows");
+    await db.query("DELETE FROM thread_scans");
+    await db.query("UPDATE tracked_content SET last_checked_at = now()");
+    await db.query(
+      `INSERT INTO content_sources (user_id, node_id, subscription_id)
+       SELECT 'U_alice', 'I_1', id FROM subscriptions`,
+    );
+    await db.query(
+      `INSERT INTO reaction_snapshots (user_id, node_id, retry_at)
+       VALUES ('U_alice', 'I_1', now() - interval '1 day')`,
+    );
+    const { rows } = await db.query<{ id: string }>(
+      "SELECT id::text FROM subscriptions",
+    );
+    expect(await runSyncTask(session)).toMatchObject({ kind: "snapshot" });
+    expect(runSnapshotSweep).toHaveBeenCalledWith(session, rows[0]?.id);
   });
 
   it("releases the job until the next item is due when idle", async () => {
