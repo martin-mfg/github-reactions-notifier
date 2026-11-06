@@ -79,8 +79,8 @@ describe("budgetHasRoom", () => {
 
 const insertUser = async (id: string): Promise<void> => {
   await db.query(
-    `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc, token_nonce, token_status)
-     VALUES ($1, $1, now() - interval '10 years', 'v1.enc', 'nonce', 'active')`,
+    `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc, token_status)
+     VALUES ($1, $1, now() - interval '10 years', 'gse.v1.enc', 'active')`,
     [id],
   );
 };

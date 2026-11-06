@@ -48,8 +48,8 @@ const insertUser = async (
   tokenStatus = "active",
 ): Promise<void> => {
   await db.query(
-    `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc, token_nonce, token_status)
-     VALUES ($1, $1, now() - interval '10 years', 'v1.enc', 'nonce', $2)`,
+    `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc, token_status)
+     VALUES ($1, $1, now() - interval '10 years', 'gse.v1.enc', $2)`,
     [id, tokenStatus],
   );
 };

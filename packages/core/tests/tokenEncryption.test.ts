@@ -10,20 +10,40 @@ const cipher = new AccessTokenCipher([KEY]);
 const USER = "U_kgDOAAAAAQ";
 
 describe("AccessTokenCipher", () => {
-  it("round-trips a token, with a v1 prefix and no plaintext", () => {
+  /**
+   * @param value A stored value.
+   * @returns Its base64 parts after the prefix: IV, auth tag, ciphertext.
+   */
+  const partsOf = (value: string): Array<Buffer> =>
+    value
+      .slice("gse.v1.".length)
+      .split(".")
+      .map((part) => Buffer.from(part, "base64"));
+
+  /**
+   * @param parts IV, auth tag and ciphertext.
+   * @returns The stored value made of them.
+   */
+  const join = (parts: Array<Buffer>): string =>
+    `gse.v1.${parts.map((part) => part.toString("base64")).join(".")}`;
+
+  it("round-trips a token as gse.v1.<iv>.<tag>.<ciphertext>, with no plaintext", () => {
     const stored = cipher.encrypt("gho_secret", USER);
 
-    expect(stored.tokenEnc).toMatch(/^v1\./);
-    expect(JSON.stringify(stored)).not.toContain("gho_secret");
+    expect(stored).toMatch(/^gse\.v1\.[^.]+\.[^.]+\.[^.]+$/);
+    const [iv, tag] = partsOf(stored);
+    expect(iv).toHaveLength(12);
+    expect(tag).toHaveLength(16);
+    expect(stored).not.toContain("gho_secret");
     expect(cipher.decrypt(stored, USER)).toBe("gho_secret");
   });
 
-  it("uses a fresh nonce for every call", () => {
+  it("uses a fresh IV for every call", () => {
     const a = cipher.encrypt("gho_secret", USER);
     const b = cipher.encrypt("gho_secret", USER);
 
-    expect(a.tokenNonce).not.toBe(b.tokenNonce);
-    expect(a.tokenEnc).not.toBe(b.tokenEnc);
+    expect(partsOf(a)[0]).not.toEqual(partsOf(b)[0]);
+    expect(a).not.toBe(b);
   });
 
   it("decrypts with a rotated-out key", () => {
@@ -44,27 +64,39 @@ describe("AccessTokenCipher", () => {
   });
 
   it("rejects a tampered ciphertext", () => {
-    const stored = cipher.encrypt("gho_secret", USER);
-    const [prefix, tag, ciphertext] = stored.tokenEnc.split(".");
-    const bytes = Buffer.from(ciphertext ?? "", "base64");
+    const [iv, tag, ciphertext] = partsOf(cipher.encrypt("gho_secret", USER));
+    const bytes = Buffer.from(ciphertext ?? Buffer.alloc(0));
     bytes[0] = (bytes[0] ?? 0) ^ 0xff;
-    const tampered = `${prefix ?? ""}.${tag ?? ""}.${bytes.toString("base64")}`;
+    const tampered = join([
+      iv ?? Buffer.alloc(0),
+      tag ?? Buffer.alloc(0),
+      bytes,
+    ]);
 
-    expect(() =>
-      cipher.decrypt({ ...stored, tokenEnc: tampered }, USER),
-    ).toThrow(/no key in TOKEN_ENCRYPTION_KEY matches/);
+    expect(() => cipher.decrypt(tampered, USER)).toThrow(
+      /no key in TOKEN_ENCRYPTION_KEY matches/,
+    );
+  });
+
+  it("rejects a truncated auth tag as malformed", () => {
+    const [iv, tag, ciphertext] = partsOf(cipher.encrypt("gho_secret", USER));
+    const truncated = join([
+      iv ?? Buffer.alloc(0),
+      (tag ?? Buffer.alloc(0)).subarray(0, 4),
+      ciphertext ?? Buffer.alloc(0),
+    ]);
+
+    expect(() => cipher.decrypt(truncated, USER)).toThrow(/Malformed/);
   });
 
   it.each([
-    ["plaintext", { tokenEnc: "gho_plain", tokenNonce: "" }],
-    ["too few parts", { tokenEnc: "v1.abc", tokenNonce: "AAAAAAAAAAAAAAAA" }],
-    [
-      "too many parts",
-      { tokenEnc: "v1.a.b.c", tokenNonce: "AAAAAAAAAAAAAAAA" },
-    ],
-    ["a bad nonce", { tokenEnc: "v1.a.b", tokenNonce: "" }],
+    ["plaintext", "gho_plain"],
+    ["the old v1 format", "v1.AAAAAAAAAAAAAAAAAAAAAA==.AAAA"],
+    ["too few parts", "gse.v1.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA=="],
+    ["too many parts", "gse.v1.a.b.c.d"],
+    ["a bad IV", "gse.v1.AAAA.AAAAAAAAAAAAAAAAAAAAAA==.AAAA"],
   ])("rejects %s as malformed", (_, stored) => {
-    expect(() => cipher.decrypt(stored, USER)).toThrow(TokenDecryptionError);
+    expect(() => cipher.decrypt(stored, USER)).toThrow(/Malformed/);
   });
 
   describe("fromEnv", () => {

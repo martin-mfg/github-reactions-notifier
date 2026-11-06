@@ -69,6 +69,5 @@ export {
   AccessTokenCipher,
   TokenDecryptionError,
 } from "./common/tokenEncryption.js";
-export type { EncryptedToken } from "./common/tokenEncryption.js";
 
 export { deleteGrant, githubAuthenticate } from "./users.js";

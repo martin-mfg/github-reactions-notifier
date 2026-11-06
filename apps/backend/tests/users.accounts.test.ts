@@ -260,9 +260,7 @@ describe("loadToken", () => {
   it("marks a plaintext token invalid", async () => {
     vi.spyOn(logger, "error").mockImplementation(() => undefined);
     await signIn(db, alice, "gho_alice", { cipher, siteUrl });
-    await db.query(
-      "UPDATE users SET token_enc = 'gho_plain', token_nonce = ''",
-    );
+    await db.query("UPDATE users SET token_enc = 'gho_plain'");
 
     expect(await loadToken(db, alice.id, cipher)).toBeNull();
     const { rows } = await db.query("SELECT token_status FROM users");
@@ -274,8 +272,8 @@ describe("loadToken", () => {
     await signIn(db, alice, "gho_alice", { cipher, siteUrl });
     await signIn(db, bob, "gho_bob", { cipher, siteUrl });
     await db.query(
-      `UPDATE users SET (token_enc, token_nonce) =
-         (SELECT token_enc, token_nonce FROM users WHERE gh_user_id = $1)
+      `UPDATE users SET token_enc =
+         (SELECT token_enc FROM users WHERE gh_user_id = $1)
        WHERE gh_user_id = $2`,
       [alice.id, bob.id],
     );

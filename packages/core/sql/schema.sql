@@ -14,8 +14,7 @@ CREATE TABLE users (
   gh_user_id    text PRIMARY KEY,  -- the FK target of every per-user table, and NFR-3's AAD
   login         text NOT NULL,     -- mutable; refreshed from viewer { id login }
   gh_created_at timestamptz NOT NULL,
-  token_enc     text NOT NULL,
-  token_nonce   text NOT NULL,
+  token_enc     text NOT NULL,     -- gse.v1.<iv>.<auth tag>.<ciphertext> (NFR-3)
   token_status  text NOT NULL DEFAULT 'active'
                 CHECK (token_status IN ('active', 'revoked', 'invalid'))
 );

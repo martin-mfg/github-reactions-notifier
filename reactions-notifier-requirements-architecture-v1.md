@@ -210,7 +210,7 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
   taken in github-stats-extended
   [PR #536](https://github.com/stats-organization/github-stats-extended/pull/536):
   AES-256-GCM, 32-byte key from `TOKEN_ENCRYPTION_KEY` (hex or base64), `user_id` as AAD,
-  a versioned `v1.` prefix marking ciphertext, and comma-separated keys for rotation
+  one stored value `gse.v1.<iv>.<auth tag>.<ciphertext>` with a versioned prefix, and comma-separated keys for rotation
   (first encrypts, all decrypt). An undecryptable token is treated as "user must log in
   again" rather than a crash.
   **GRN should be stricter than the original in one respect:** because it is greenfield, the
@@ -265,6 +265,8 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
 | **Notifier** | Groups new reactions per user/channel/cadence and renders messages. Not a job of its own: the insert into `reaction_notifications` opens each user's pending message — a `deliver` job in M1, an outbox row from M2 — and the dispatcher has it rendered when it is sent (§6.6). |
 | **Dispatcher** | Does all the machine account's work — opens each user's inbox issue and delivers the notifier's messages to it (§6.7) — a new user's inbox first, then strictly in `run_at` order. **Globally serialised** for the shared machine account, token-bucket paced, idempotent, with classified retry and a dead-letter queue (§6.8). |
 | **Token service** | Encrypt/decrypt tokens, detect revocation, drive the downgrade path. |
+
+In the future we might consider replacing the cron component by [Vercel daemons](https://vercel.com/docs/daemons).
 
 Workers are plain Node processes driven by a Postgres queue
 (`SELECT … FOR UPDATE SKIP LOCKED`), so the same code runs as a Vercel function or a
@@ -1428,7 +1430,7 @@ are the ones that wait.
 ### 6.5 Data model (sketch)
 
 ```
-users(gh_user_id PK, login, gh_created_at, token_enc, token_nonce, token_status)
+users(gh_user_id PK, login, gh_created_at, token_enc, token_status)
         -- gh_user_id = the GraphQL global node id (see content.node_id below for the header
         --   this obliges every request to send). Not the login, which is renameable, and not
         --   databaseId: GitHub's guidance is to persist the node id, and no REST request GRN

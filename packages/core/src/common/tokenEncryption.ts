@@ -9,16 +9,14 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 const ALGORITHM = "aes-256-gcm";
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
+const AUTH_TAG_BYTES = 16;
 const HEX_KEY = /^[0-9a-fA-F]{64}$/;
 
-/** Marks a value as encrypted and versions the format. */
-const PREFIX = "v1.";
-
-/** A token as stored: `tokenEnc` is `v1.<auth tag>.<ciphertext>`, `tokenNonce` the IV (base64). */
-interface EncryptedToken {
-  tokenEnc: string;
-  tokenNonce: string;
-}
+/**
+ * Marks a value as encrypted and versions the format. A stored value is
+ * `gse.v1.<iv>.<auth tag>.<ciphertext>`, each part base64, as in github-stats-extended.
+ */
+const PREFIX = "gse.v1.";
 
 /** The stored token is unreadable: the user has to sign in again. */
 class TokenDecryptionError extends Error {
@@ -72,49 +70,59 @@ class AccessTokenCipher {
   /**
    * @param token Plaintext GitHub access token.
    * @param userId Owner of the token, bound to the ciphertext as AAD.
-   * @returns The values to store.
+   * @returns The value to store: `gse.v1.<iv>.<auth tag>.<ciphertext>`.
    */
-  encrypt(token: string, userId: string): EncryptedToken {
+  encrypt(token: string, userId: string): string {
     const [key] = this.#keys;
     if (!key) {
       throw new Error("TOKEN_ENCRYPTION_KEY is not set");
     }
     const iv = randomBytes(IV_BYTES);
-    const cipher = createCipheriv(ALGORITHM, key, iv).setAAD(
-      Buffer.from(userId),
-    );
+    const cipher = createCipheriv(ALGORITHM, key, iv, {
+      authTagLength: AUTH_TAG_BYTES,
+    }).setAAD(Buffer.from(userId));
     const ciphertext = Buffer.concat([cipher.update(token), cipher.final()]);
-    return {
-      tokenEnc: `${PREFIX}${cipher.getAuthTag().toString("base64")}.${ciphertext.toString("base64")}`,
-      tokenNonce: iv.toString("base64"),
-    };
+    const parts = [iv, cipher.getAuthTag(), ciphertext].map((part) =>
+      part.toString("base64"),
+    );
+    return PREFIX + parts.join(".");
   }
 
   /**
-   * @param stored The stored values.
+   * @param value The stored value.
    * @param userId Owner of the row.
    * @returns Plaintext GitHub access token.
-   * @throws {TokenDecryptionError} The value is malformed, or no key authenticates it.
+   * @throws {TokenDecryptionError} The value is malformed (plaintext included), or no key
+   *   authenticates it.
    */
-  decrypt(stored: EncryptedToken, userId: string): string {
-    const parts = stored.tokenEnc.startsWith(PREFIX)
-      ? stored.tokenEnc.slice(PREFIX.length).split(".")
+  decrypt(value: string, userId: string): string {
+    const parts = value.startsWith(PREFIX)
+      ? value.slice(PREFIX.length).split(".")
       : [];
-    if (parts.length !== 2) {
+    if (parts.length !== 3) {
       throw new TokenDecryptionError("Malformed encrypted access token");
     }
-    const [authTag, ciphertext] = parts.map((part) =>
+    const [iv, authTag, ciphertext] = parts.map((part) =>
       Buffer.from(part, "base64"),
     );
-    const iv = Buffer.from(stored.tokenNonce, "base64");
-    if (!authTag || !ciphertext || iv.length !== IV_BYTES) {
+    if (
+      !iv ||
+      !authTag ||
+      !ciphertext ||
+      iv.length !== IV_BYTES ||
+      authTag.length !== AUTH_TAG_BYTES
+    ) {
       throw new TokenDecryptionError("Malformed encrypted access token");
     }
+    const aad = Buffer.from(userId);
 
     for (const key of this.#keys) {
       try {
-        const decipher = createDecipheriv(ALGORITHM, key, iv)
-          .setAAD(Buffer.from(userId))
+        // A pinned tag length stops Node from accepting a truncated tag.
+        const decipher = createDecipheriv(ALGORITHM, key, iv, {
+          authTagLength: AUTH_TAG_BYTES,
+        })
+          .setAAD(aad)
           .setAuthTag(authTag);
         return Buffer.concat([
           decipher.update(ciphertext),
@@ -131,4 +139,3 @@ class AccessTokenCipher {
 }
 
 export { AccessTokenCipher, TokenDecryptionError };
-export type { EncryptedToken };

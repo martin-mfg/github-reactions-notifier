@@ -47,7 +47,7 @@ beforeEach(async () => {
 });
 
 const SITE_URL = "https://grn.example";
-const TOKEN_ENC = "v1.tag.alice";
+const TOKEN_ENC = "gse.v1.iv.tag.alice";
 
 /**
  * Inserts an active user with a due `sync` job and claims it.
@@ -56,8 +56,8 @@ const TOKEN_ENC = "v1.tag.alice";
  */
 const leasedSession = async (): Promise<SyncSession> => {
   await db.query(
-    `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc, token_nonce, token_status)
-     VALUES ('U_alice', 'alice', now() - interval '10 years', $1, 'nonce', 'active')`,
+    `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc, token_status)
+     VALUES ('U_alice', 'alice', now() - interval '10 years', $1, 'active')`,
     [TOKEN_ENC],
   );
   await db.query(
@@ -479,7 +479,7 @@ describe("settleSyncFailure", () => {
 
   it("leaves a token stored by a later sign-in alone", async () => {
     const session = await leasedSession();
-    await db.query("UPDATE users SET token_enc = 'v1.tag.new'");
+    await db.query("UPDATE users SET token_enc = 'gse.v1.iv.tag.new'");
 
     await settleSyncFailure(session, { kind: "unauthorized" });
 

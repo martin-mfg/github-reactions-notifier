@@ -131,14 +131,14 @@ export const signIn = async (
   accessToken: string,
   { cipher, siteUrl, config = defaultConfig }: SignInOptions,
 ): Promise<{ isNew: boolean; inboxRequested: boolean }> => {
-  const { tokenEnc, tokenNonce } = cipher.encrypt(accessToken, identity.id);
+  const tokenEnc = cipher.encrypt(accessToken, identity.id);
   return withTransaction(db, async (client) => {
     const { rows } = await client.query(
-      `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc, token_nonce)
-       VALUES ($1, $2, $3::timestamptz, $4, $5)
+      `INSERT INTO users (gh_user_id, login, gh_created_at, token_enc)
+       VALUES ($1, $2, $3::timestamptz, $4)
        ON CONFLICT (gh_user_id) DO NOTHING
        RETURNING gh_user_id`,
-      [identity.id, identity.login, identity.createdAt, tokenEnc, tokenNonce],
+      [identity.id, identity.login, identity.createdAt, tokenEnc],
     );
     const isNew = rows.length === 1;
     if (isNew) {
@@ -146,9 +146,9 @@ export const signIn = async (
     } else {
       // A returning sign-in does not recreate a deleted sync job (§12).
       await client.query(
-        `UPDATE users SET login = $2, token_enc = $3, token_nonce = $4, token_status = 'active'
+        `UPDATE users SET login = $2, token_enc = $3, token_status = 'active'
          WHERE gh_user_id = $1`,
-        [identity.id, identity.login, tokenEnc, tokenNonce],
+        [identity.id, identity.login, tokenEnc],
       );
     }
     const inboxRequested = await requestInbox(client, identity, siteUrl);
@@ -177,8 +177,8 @@ export const loadToken = async (
   userId: string,
   cipher: AccessTokenCipher,
 ): Promise<StoredToken | null> => {
-  const { rows } = await db.query<{ token_enc: string; token_nonce: string }>(
-    "SELECT token_enc, token_nonce FROM users WHERE gh_user_id = $1",
+  const { rows } = await db.query<{ token_enc: string }>(
+    "SELECT token_enc FROM users WHERE gh_user_id = $1",
     [userId],
   );
   const row = rows[0];
@@ -186,10 +186,7 @@ export const loadToken = async (
     return null;
   }
   try {
-    const token = cipher.decrypt(
-      { tokenEnc: row.token_enc, tokenNonce: row.token_nonce },
-      userId,
-    );
+    const token = cipher.decrypt(row.token_enc, userId);
     return { token, tokenEnc: row.token_enc };
   } catch (error) {
     if (!(error instanceof TokenDecryptionError)) {
@@ -199,8 +196,8 @@ export const loadToken = async (
     // Compare-and-swap, so a sign-in that stored a new token meanwhile is not clobbered.
     await db.query(
       `UPDATE users SET token_status = 'invalid'
-       WHERE gh_user_id = $1 AND token_enc = $2 AND token_nonce = $3`,
-      [userId, row.token_enc, row.token_nonce],
+       WHERE gh_user_id = $1 AND token_enc = $2`,
+      [userId, row.token_enc],
     );
     return null;
   }

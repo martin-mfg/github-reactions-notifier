@@ -200,8 +200,8 @@ right:
 - **NFR-2** Never exhaust a user's GitHub rate limit. One global budget policy (§8).
 - **NFR-3** Tokens are encrypted at rest as in github-stats-extended PR #536: AES-256-GCM, a
   32-byte key from `TOKEN_ENCRYPTION_KEY` (hex or base64), `user_id` (= `gh_user_id`) as AAD,
-  a `v1.` ciphertext prefix, and comma-separated keys for rotation (the first encrypts, all
-  decrypt). **Stricter than PR #536:** the key is mandatory, with no plaintext fallback, no
+  one stored value `gse.v1.<iv>.<auth tag>.<ciphertext>` (base64 parts, 16-byte tag), and
+  comma-separated keys for rotation (the first encrypts, all decrypt). **Stricter than PR #536:** the key is mandatory, with no plaintext fallback, no
   legacy read path, and no migration script. An undecryptable token sets
   `token_status = 'invalid'` (the user must log in again); it must not crash.
 - **NFR-4** GDPR deletion (FR-3). M1 is public-tier only, so no private content can reach
@@ -716,7 +716,7 @@ All ids are GraphQL global node ids in the new format unless stated otherwise. A
 come from Postgres `now()` unless they are GitHub values.
 
 ```
-users(gh_user_id PK, login, gh_created_at, token_enc, token_nonce, token_status)
+users(gh_user_id PK, login, gh_created_at, token_enc, token_status)
   -- token_status ∈ {'active','revoked','invalid'}; gh_user_id is the FK target and NFR-3's AAD
   -- login is mutable; it's refreshed from viewer { id login } on every discovery query
 
@@ -884,8 +884,8 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
      the browser started. It also carries the action (`signin`/`delete`) and the FR-2a
      attempt. A scoped token deletes the grant and restarts once; a second scoped token ends
      the flow with an error message.
-   - `token_enc` is `v1.<auth tag>.<ciphertext>` (base64), `token_nonce` the 12-byte IV
-     (base64), and the AAD is `gh_user_id`. `TOKEN_ENCRYPTION_KEY` is required and may list
+   - `token_enc` is `gse.v1.<iv>.<auth tag>.<ciphertext>` (base64 parts: a 12-byte IV and a
+     16-byte tag), github-stats-extended's format, and the AAD is `gh_user_id`. `TOKEN_ENCRYPTION_KEY` is required and may list
      several comma-separated keys: the first encrypts, all decrypt.
    - Reading a token that does not decrypt sets `token_status = 'invalid'` only if the stored
      token is unchanged, so a concurrent sign-in's new token is not clobbered.
