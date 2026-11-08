@@ -1,0 +1,16 @@
+---
+/*
+ * Replaces Starlight's `Banner`: every page shows that GRN is a prototype. A page that sets
+ * its own `banner` in its frontmatter still gets it, below this one.
+ */
+import Default from "@astrojs/starlight/components/Banner.astro";
+---
+
+<div class="prototype-banner" data-pagefind-ignore>
+  <strong>🚧 Prototype.</strong> This is an early alpha: expect bugs, and it may lose data
+  or be shut down.
+  <a href="https://github.com/martin-mfg/github-reactions-notifier/issues"
+    >Report bugs and ideas</a
+  >
+</div>
+<Default />

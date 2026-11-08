@@ -18,6 +18,22 @@ export default defineConfig({
       title: "GitHub Reactions Notifier",
       description:
         "Get notified about reactions to your GitHub issues, pull requests and comments.",
+      logo: { src: "./src/assets/icon.png", alt: "" },
+      favicon: "/favicon.png",
+      social: [
+        {
+          icon: "github",
+          label: "GitHub",
+          href: "https://github.com/martin-mfg/github-reactions-notifier",
+        },
+      ],
+      // Marks the site as a prototype: a banner on every page and an "alpha" badge.
+      customCss: ["./src/styles/prototype.css"],
+      components: {
+        Banner: "./src/components/PrototypeBanner.astro",
+        // Adds the icon's attribution.
+        Footer: "./src/components/Footer.astro",
+      },
       sidebar: [{ label: "Overview", slug: "docs" }],
     }),
   ],

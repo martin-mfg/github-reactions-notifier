@@ -1,141 +1,104 @@
+<img src="docs/icon.png" alt="" width="96" align="right">
+
 # GitHub Reactions Notifier
 
-Notifies you about reactions to your GitHub issues, pull requests and comments.
+> [!WARNING]
+> **This is a prototype (alpha).** It may have bugs, lose data, or be shut down at any time.
+> I'm releasing it early to find out whether people want it.
+> [Your feedback](#feedback) decides whether it gets developed further.
 
-The requirements live in [reactions-notifier-m1-requirements.md](reactions-notifier-m1-requirements.md).
+GitHub notifies you about comments, mentions and reviews, but never about reactions.
+When someone adds 👍, ❤️ or 🎉 to your issue, you only find out by accident.
 
-## Layout
+GitHub Reactions Notifier fills this gap. Sign in once, and you get a GitHub notification
+whenever someone reacts to your issues, pull requests or comments.
 
-| Path            | Contents                                                                                                           |
-| --------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `apps/backend`  | Express server (`express.ts`) serving the handlers under `api/` and the built frontend. GRN's own logic: `src/`.   |
-| `apps/frontend` | Static Astro site (React + Starlight docs).                                                                        |
-| `packages/core` | Code adapted from [github-stats-extended](https://github.com/stats-organization/github-stats-extended), see below. |
+**[Sign in here](https://TODO-SITE-URL)**
 
-`apps/backend/src` holds GRN-specific code:
+## How it works
 
-| Path                       | Contents                                                                                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `config.ts`                | Tunables from requirements §14, with their defaults.                                                                                                         |
-| `db.ts`                    | The minimal database interface GRN's code runs on (`pg`'s `Pool` satisfies it); transactions.                                                                |
-| `jobs/queue.ts`            | The Postgres job queue: due rules, claim, lease renewal and fencing, release, and the reaper.                                                                |
-| `oauth.ts`                 | The OAuth flows behind `/api/login`, `/api/delete-account` and `/api/oauth/callback`: sign-in, the no-scope check (FR-2a), and deletion.                     |
-| `users/accounts.ts`        | The signup and returning-user sign-in transaction, reading a stored token, and account deletion (FR-3).                                                      |
-| `github/budget.ts`         | The rate-limit guard (§8) and storing each response's rate-limit headers.                                                                                    |
-| `github/syncClient.ts`     | Sends a `sync` job's queries with the user's token (guard, timeout, cost alarm, §12's unexpected responses) and settles its failures, incl. a `401` (FR-17). |
-| `github/writes.ts`         | Sends the machine account's writes on the mutation-safe path and classifies them by §12's table.                                                             |
-| `discovery/store.ts`       | Upserts discovered items into `content`, `content_sources` and `tracked_content`.                                                                            |
-| `discovery/incremental.ts` | The `authored` source's incremental discovery (§9.2): its three passes in one query, the watermark rules, and the overflow check.                            |
-| `discovery/backfill.ts`    | The `authored` source's backfill (§9.2): one window page per task, the own-content filter, the login check, and the completion check.                        |
-| `discovery/threadScans.ts` | Thread scans (§9.2): the next page of comments of a batch of long threads, in one aliased query.                                                             |
-| `discovery/results.ts`     | What the discovery tasks share: log context, the `viewer` check, and turning comments into items.                                                            |
-| `polling/poll.ts`          | Reaction polling (§9.3): the probe, the drill-down, the hot-boundary watermark, and missing items.                                                           |
-| `sync/score.ts`            | §9.1's unified score as a SQL expression.                                                                                                                    |
-| `sync/schedule.ts`         | Picks and runs a `sync` job's next task by score (§9.1), or releases the job until one is due.                                                               |
-| `inbox/opening.ts`         | Renders the issue that opens a user's inbox.                                                                                                                 |
-| `inbox/notices.ts`         | Renders one-off notices, such as FR-17's.                                                                                                                    |
-| `inbox/digestBody.ts`      | Renders a digest's comment (FR-15): grouped by item and emoji, sanitised (§11), truncated at 65,536 characters.                                              |
-| `inbox/dispatcher.ts`      | Works one leased `deliver` job (§11, §12): the marker check after an ambiguous attempt, the bucket token, the post, and settling its failure.                |
-| `github/clock.ts`          | Logs the offset of GitHub's `Date` header from Postgres' clock at most once a minute, and alerts above 2 s (NFR-7).                                          |
-| `worker/worker.ts`         | The worker loop (§7.1): claim, run one task or `deliver` job, release; wait `IDLE_WAIT` when idle; stop claiming before `maxDuration`; per-stage counters.   |
-| `cron.ts`                  | The scheduler behind `/api/cron` (§7.1): checks `CRON_SECRET`, reaps expired leases, and runs the worker loops.                                              |
+1. **Sign in with GitHub.** The app asks for no permissions beyond your public profile.
+2. **The app opens an inbox issue for you** in this repository and mentions you in it.
+   That subscribes you to the issue, so GitHub notifies you about every comment on it.
+3. **It scans your history** and posts a one-time **summary** of the reactions your content
+   has received so far: how many items it found, how many reactions they have, and the total
+   per emoji.
+4. **New reactions are posted as comments** in your inbox, usually within a few minutes.
+   Several reactions are bundled into one comment, for example:
 
-`@grn/core` is meant to be shared with github-stats-extended later, so its files keep the source repo's layout:
+   > - 2 new 👍 and 1 new 🎉 on your issue [Add dark mode](#how-it-works) in octo-org/octo-app
+   >   - 👍 @&#8203;alice and @&#8203;bob
+   >   - 🎉 @&#8203;carol
 
-| Path             | Contents                                                                                                                                                                                            |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/common`     | Config, logging, errors, the GitHub GraphQL retryer (PAT rotation, or one user's token) and HTTP helpers, the mutation-safe request path, response classification, Postgres pool, token encryption. |
-| `src/graphql`    | Typed GraphQL documents and their generated types.                                                                                                                                                  |
-| `src/users.ts`   | GitHub OAuth code exchange and grant deletion.                                                                                                                                                      |
-| `sql/schema.sql` | The database schema.                                                                                                                                                                                |
+The people named in your inbox are **not** mentioned or notified. Only you are.
 
-Code in `packages/` must never import from `apps/`.
+## What's included, and what isn't yet
 
-## Setup
+| Included                                      | Not yet included                                      |
+| --------------------------------------------- | ----------------------------------------------------- |
+| Issues you opened                             | Discussions and discussion comments                   |
+| Pull requests you opened                      | Pull request reviews and review inline comments              |
+| Your comments on issues and pull requests     | Commit comments and releases                          |
+| Content in public repositories                | Content in private repositories                       |
+| Your content from all time, however old       | Content by others in repositories you own             |
+| Notifications a few minutes after a reaction  | Other notification channels like [Atom](https://en.wikipedia.org/wiki/Atom_(web_standard)) or Webhooks                  |
+| A one-time summary of your existing reactions | Filters (e.g. only open issues)     |
+|                                               | A notification when a reaction is removed             |
 
-Requires Node 24 and pnpm (see `packageManager` in `package.json`).
+Missing something you need? [Tell me](#feedback).
 
-```sh
-pnpm install
-cp apps/backend/.env.example apps/backend/.env   # then fill it in
-```
+## Good to know
 
-### Database
+- **Your inbox is public.** Anyone can see the reactions on your content and who added them.
+  Reactions are public on GitHub anyway, but your inbox collects them in one place.
+  Content from private repositories never appears there.
+- **Reactions from before you signed in are never notified one by one.** They only count
+  towards the summary.
+- **Your own reactions to your posts are reported too**. This is especially useful for testing.
+- **The first scan takes time.** For most accounts it takes minutes to hours; for very active
+  accounts it can take days. New reactions are reported while it runs, so you may get
+  notifications before the summary arrives.
+- **Older content is checked less often.** A reaction on something you posted yesterday shows
+  up within minutes. One on something from years ago can take longer. Once an item gets a
+  reaction, it is checked often again.
+- **The app uses your GitHub API quota.** Every GitHub account can make a limited number of
+  API requests per hour, shared by all apps and tools you use. The app stops making requests
+  once 80% of your hourly quota is used.
 
-The schema is applied by hand, not by the app. Run it against an empty database:
+## Only want the summary?
 
-```sh
-psql "$POSTGRES_URL" -v ON_ERROR_STOP=1 -f packages/core/sql/schema.sql
-```
+There's no "summary only" option yet. Sign in, wait for the summary to arrive in your inbox,
+then delete your account (see below). Your inbox issue and the summary stay.
 
-Tests need no database server: they apply `schema.sql` to an in-process Postgres ([PGlite](https://pglite.dev)).
+## Stopping and deleting your data
 
-For an existing database created before the platform-wide backfill fix, stop the backend and
-apply this one-time data repair before restarting with the updated code:
+- **Delete your account** with the button on the website. This deletes all data the app
+  holds about you and revokes its access to your GitHub account. Your inbox issue stays on
+  GitHub.
+- **Unsubscribing from the inbox issue** stops the notifications, but the app keeps running
+  in the background. Delete your account to stop it completely.
+- **Revoking the app** in your GitHub settings (Settings → Applications → Authorized OAuth
+  Apps) also stops it. The app posts a short note to your inbox when it notices. Your data
+  is kept until you delete your account, so signing in again resumes where it stopped.
 
-```powershell
-psql $env:POSTGRES_URL -v ON_ERROR_STOP=1 -f packages\core\sql\repair-backfill-history.sql
-```
+## Known limitations of the prototype
 
-It extends unfinished backfills to `1970-01-01T00:00:00Z` without resetting their progress and
-reopens the omitted older-parent range for completed backfills. Existing reaction watermarks,
-notifications and jobs are unchanged. Do not rerun it after the repaired backfill completes:
-completed windows are deleted, so another run would enqueue that history again.
+- Data may be reset while the app is in development. You would have to sign in again.
+- In rare edge cases, some reactions may not be reported. For example: more than 100 new
+  reactions on a single item between two checks.
+- If you rename a repository or edit a title, your inbox may keep showing the old name.
 
-### Environment variables (backend)
+## Feedback
 
-| Variable                | Purpose                                                                                                                                                                                 |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POSTGRES_URL`          | Postgres connection string.                                                                                                                                                             |
-| `OAUTH_CLIENT_ID`       | GRN's own GitHub OAuth App.                                                                                                                                                             |
-| `OAUTH_CLIENT_SECRET`   | Its client secret.                                                                                                                                                                      |
-| `OAUTH_REDIRECT_URI`    | Its callback URL: `<site>/api/oauth/callback`.                                                                                                                                          |
-| `TOKEN_ENCRYPTION_KEY`  | Encrypts stored user tokens (AES-256-GCM): 32 bytes as hex or base64. Comma-separate several keys to rotate; the first encrypts, all decrypt. Generate one with `openssl rand -hex 32`. |
-| `PAT_1`, `PAT_2`, ...   | Personal access tokens for the GitHub client.                                                                                                                                           |
-| `MACHINE_ACCOUNT_TOKEN` | Token of the machine account that opens the inboxes and posts every comment (§11). It needs write access to issues in `INBOX_REPO`.                                                     |
-| `INBOX_REPO`            | The repo holding the inbox issues, as `owner/repo`.                                                                                                                                     |
-| `CRON_SECRET`           | Authorizes calls to `/api/cron`, sent as `Authorization: Bearer <secret>`. Without it, every call is refused. Vercel Cron sends it automatically.                                       |
-| `PORT`                  | Port to listen on: 80 in Docker, else 9000.                                                                                                                                             |
+This prototype exists to find out whether the app is worth building further.
+Please [open an issue](https://github.com/martin-mfg/github-reactions-notifier/issues) and
+tell me:
 
-## Commands
+- Do you find it useful? Would you keep using it?
+- What's missing for you?
+- Did anything go wrong?
 
-| Command             | Does                                                  |
-| ------------------- | ----------------------------------------------------- |
-| `pnpm dev:backend`  | Serves the API (and the built frontend) on port 9000. |
-| `pnpm dev:frontend` | Astro dev server; proxies `/api` to the backend.      |
-| `pnpm test`         | Runs all tests.                                       |
-| `pnpm lint`         | ESLint in every workspace.                            |
-| `pnpm lint:knip`    | Unused files, exports and dependencies.               |
-| `pnpm typecheck`    | TypeScript in every workspace.                        |
-| `pnpm format`       | Prettier.                                             |
+## Credits
 
-After editing a `.graphql` file under `packages/core/src/graphql/queries`, regenerate its types:
-
-```sh
-pnpm --filter ./packages/core run generate-graphql-types
-```
-
-## Deployment
-
-The app is deployed as a Docker image, which Vercel runs from `Dockerfile.vercel`: one container runs the backend, which also serves the built frontend.
-Every release publishes a multi-platform image (amd64/arm64) to the GitHub Container Registry (`.github/workflows/release.yml`).
-The image smoke test checks `/` and its page content without a database. `/api/status/up`
-remains a database-readiness check.
-
-```sh
-docker run -d -p 9000:80 --env-file apps/backend/.env ghcr.io/martin-mfg/github-reactions-notifier:latest
-```
-
-The instance is then available at `http://localhost:9000`. To build the image yourself, run `docker build -f Dockerfile.vercel .` from the repository root.
-
-### Scheduler
-
-The workers run inside `/api/cron`, which must be called every minute (§7.1). Each call reaps expired leases, then runs the worker loops until shortly before `maxDurationSeconds` (790 s, see `src/config.ts`), and only then responds.
-On Vercel, `vercel.json` schedules it; set the project's maximum function duration (Project Settings → Functions) to 800 s to match.
-Elsewhere, call it from any scheduler, e.g. a crontab entry:
-
-```sh
-* * * * * curl -fsS -m 900 -H "Authorization: Bearer $CRON_SECRET" http://localhost:9000/api/cron > /dev/null
-```
-
-`/api/status/up` reports whether the backend reaches its database (`?type=json` or `?type=shields` for other formats). While it doesn't, it answers `503`, except for `?type=shields`.
+Daumen hoch hand Icon by recognizeapp.com on
+<a href="https://icon-icons.com/de/authors/533-recognizeapp-com">Icon-Icons.com</a>

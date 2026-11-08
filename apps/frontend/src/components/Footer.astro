@@ -1,0 +1,23 @@
+---
+/* Replaces Starlight's `Footer`: the default footer, plus the attribution the icon requires. */
+import Default from "@astrojs/starlight/components/Footer.astro";
+---
+
+<Default />
+<p class="attribution">
+  Daumen hoch hand Icon by recognizeapp.com on <a
+    href="https://icon-icons.com/de/authors/533-recognizeapp-com">Icon-Icons.com</a
+  >
+</p>
+
+<style>
+  .attribution {
+    margin-top: 2rem;
+    text-align: center;
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+  }
+  .attribution a {
+    color: inherit;
+  }
+</style>

@@ -1,0 +1,38 @@
+/* Makes the site look like what it is: a prototype. */
+
+/* Construction-tape stripes above and below the banner. */
+.prototype-banner {
+  margin-bottom: 1rem;
+  padding: 0.6rem var(--sl-nav-pad-x);
+  border-block: 8px solid transparent;
+  border-image: repeating-linear-gradient(
+      -45deg,
+      #f5c400 0 12px,
+      #1f1f1f 12px 24px
+    )
+    8;
+  background-color: #fff6c2;
+  color: #1f1f1f;
+  text-align: center;
+  text-wrap: balance;
+}
+.prototype-banner a {
+  color: inherit;
+  font-weight: 600;
+}
+
+/* A slightly crooked "alpha" sticker after the site title. */
+.site-title::after {
+  content: "alpha";
+  margin-inline-start: 0.5rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px dashed #1f1f1f;
+  border-radius: 0.25rem;
+  background-color: #f5c400;
+  color: #1f1f1f;
+  font-size: var(--sl-text-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transform: rotate(-4deg);
+}
