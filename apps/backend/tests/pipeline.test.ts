@@ -290,6 +290,58 @@ describe("fanOut", () => {
     );
   });
 
+  it("queues nothing and opens no digest for a user in summary mode (M1.2 §4.4)", async () => {
+    await signUp("alice");
+    await signUp("bob");
+    await source("I_1", ["U_alice", "U_bob"]);
+    await db.query(
+      "UPDATE users SET mode = 'summary' WHERE gh_user_id = 'U_bob'",
+    );
+
+    expect(await queue([await react("I_1", "dave")])).toBe(1);
+
+    expect((await notifications()).map((row) => row.user_id)).toEqual([
+      "U_alice",
+    ]);
+    expect((await digests()).map((row) => row.user_id)).toEqual(["U_alice"]);
+  });
+
+  it("after turning notifications on, queues only reactions from the new enabled_at on (M1.2 §6)", async () => {
+    await signUp("alice");
+    await source("I_1", ["U_alice"]);
+    await signIn(
+      db,
+      { id: "U_alice", login: "alice", createdAt: "2015-01-01T00:00:00Z" },
+      "gho_alice",
+      { cipher, siteUrl: "https://grn", mode: "summary" },
+    );
+    // the pause began long ago
+    await db.query(
+      "UPDATE subscription_types SET enabled_at = now() - interval '30 days'",
+    );
+    await signIn(
+      db,
+      { id: "U_alice", login: "alice", createdAt: "2015-01-01T00:00:00Z" },
+      "gho_alice",
+      { cipher, siteUrl: "https://grn", mode: "notify" },
+    );
+
+    const queued = await queue([
+      // during the pause
+      await react("I_1", "bob", "THUMBS_UP", 86_400),
+      // in the pause's last CLOCK_MARGIN: the accepted overlap
+      await react("I_1", "carol", "THUMBS_UP", 60),
+      // after resuming
+      await react("I_1", "dave", "THUMBS_UP", 0),
+    ]);
+
+    expect(queued).toBe(2);
+    expect((await notifications()).map((row) => row.reactor_id)).toEqual([
+      "U_carol",
+      "U_dave",
+    ]);
+  });
+
   it("opens no digest if nothing was queued", async () => {
     await signUp("alice");
     await source("I_1", ["U_alice"]);

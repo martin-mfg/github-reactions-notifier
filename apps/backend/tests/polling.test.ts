@@ -666,3 +666,63 @@ describe("runPoll", () => {
     expect((await syncJob())?.due_in).toBeGreaterThan(290);
   });
 });
+
+describe("runPoll across a mode switch (M1.2 §4.4, §6)", () => {
+  const switchTo = (mode: "notify" | "summary") =>
+    signIn(db, ALICE, "gho_alice", { cipher, siteUrl: "https://grn", mode });
+
+  const queuedFor = async () => {
+    const { rows } = await db.query<{ reactor_id: string }>(
+      "SELECT reactor_id FROM reaction_notifications WHERE outcome = 'queued'",
+    );
+    return rows.map((row) => row.reactor_id);
+  };
+
+  const digestCount = async () => {
+    const { rows } = await db.query(
+      "SELECT 1 FROM jobs WHERE kind = 'deliver' AND payload->>'digest' = 'true'",
+    );
+    return rows.length;
+  };
+
+  it("a poll that started before notifications were turned off stores its events but queues nothing, and they are not replayed after resuming", async () => {
+    const session = await setUp();
+    await track("I_1");
+    const reactions = page([reaction(ago(10), bob)]);
+    // "Just send me a one-time summary" while the drill-down runs; the backfill isn't
+    // finished, so the sync job is kept
+    const drillDown = vi.fn<DrillDownFetcher>(async () => {
+      expect((await switchTo("summary")).status).toBe(
+        "notifications-off-summary-pending",
+      );
+      return respond<ReactionDrillDownQuery>({
+        rateLimit: { cost: 1 },
+        ...aliased([reactions]),
+      });
+    });
+
+    const result = await runPoll(session, {
+      probe: probing([newestAt(ago(10))]),
+      drillDown,
+    });
+
+    expect(result).toMatchObject({ ok: true, queued: 0 });
+    expect(await events()).toHaveLength(1);
+    expect(await queuedFor()).toEqual([]);
+    expect(await digestCount()).toBe(0);
+
+    // resuming: the stored event is re-read, but only newly inserted events fan out
+    expect((await switchTo("notify")).status).toBe(
+      "notifications-on-summary-pending",
+    );
+    await makeDue();
+    const again = await runPoll(await nextRun(session), {
+      probe: probing([newestAt(ago(10))]),
+      drillDown: drilling([reactions]),
+    });
+
+    expect(again).toMatchObject({ ok: true, newReactions: [], queued: 0 });
+    expect(await queuedFor()).toEqual([]);
+    expect(await digestCount()).toBe(0);
+  });
+});

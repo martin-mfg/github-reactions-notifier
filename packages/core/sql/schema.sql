@@ -16,7 +16,9 @@ CREATE TABLE users (
   gh_created_at timestamptz NOT NULL,
   token_enc     text NOT NULL,     -- gse.v1.<iv>.<auth tag>.<ciphertext> (NFR-3)
   token_status  text NOT NULL DEFAULT 'active'
-                CHECK (token_status IN ('active', 'revoked', 'invalid'))
+                CHECK (token_status IN ('active', 'revoked', 'invalid')),
+  -- 'notify': poll and notify. 'summary': the one-time summary only, no polls (M1.2 §2).
+  mode          text NOT NULL DEFAULT 'notify' CHECK (mode IN ('notify', 'summary'))
 );
 
 -- Exactly one per user in M1: the implicit `authored` source.

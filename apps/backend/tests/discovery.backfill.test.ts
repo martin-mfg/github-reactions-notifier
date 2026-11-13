@@ -1152,3 +1152,140 @@ describe("reaction snapshots and the backfill summary (M1.1)", () => {
     expect(await summaries()).toEqual([]);
   });
 });
+
+describe("summary mode and rescans (M1.2)", () => {
+  const summaries = async () => {
+    const { rows } = await db.query<{ id: string; body: string }>(
+      `SELECT id, payload->>'body' AS body FROM jobs
+       WHERE kind = 'deliver' AND payload->>'body' LIKE '## 📊%'`,
+    );
+    return rows;
+  };
+
+  const ONE_TIME = "you asked for a one-time summary";
+
+  const summaryMode = () =>
+    db.query("UPDATE users SET mode = 'summary' WHERE gh_user_id = 'U_alice'");
+
+  it("deletes the sync job instead of releasing it when the last window queues a summary-mode summary", async () => {
+    const { session, categoryId } = await setUp();
+    await summaryMode();
+
+    const result = await runBackfill(session, categoryId, searching());
+
+    expect(result).toMatchObject({ window: { kind: "deleted" } });
+    const notices = await summaries();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.body).toContain(ONE_TIME);
+    expect(notices[0]?.body).toContain("https://grn");
+    expect(await syncJob()).toBeUndefined();
+  });
+
+  it("releases the sync job as before when the summary is queued in notify mode", async () => {
+    const { session, categoryId } = await setUp();
+
+    await runBackfill(session, categoryId, searching());
+
+    const notices = await summaries();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.body).not.toContain(ONE_TIME);
+    expect(await syncJob()).toMatchObject({ locked_by: null });
+  });
+
+  it("deletes the sync job when the last thread scan queues a summary-mode summary", async () => {
+    const { session, categoryId } = await setUp();
+    await summaryMode();
+    await runBackfill(
+      session,
+      categoryId,
+      searching({
+        hits: [hit("I_long", at(-10), { author: bob, moreComments: true })],
+      }),
+    );
+    expect(await syncJob()).toMatchObject({ locked_by: null });
+
+    const result = await runThreadScans(
+      { ...session, lease: await claim() },
+      categoryId,
+      scanning([thread([comment("C_bob", at(1), bob)])]),
+    );
+
+    expect(result).toMatchObject({ ok: true, finished: 1 });
+    expect(result.ok && result.summary).toBe((await summaries())[0]?.id);
+    expect(await syncJob()).toBeUndefined();
+  });
+
+  it.each([
+    { page: "a middle page", hasNextPage: true },
+    { page: "the last page", hasNextPage: false },
+  ])(
+    "keeps $page's items but leaves a window that a sign-in reset meanwhile",
+    async ({ hasNextPage }) => {
+      const { session, categoryId } = await setUp();
+      await summaryMode();
+      // "Get notified about reactions" while the page's request runs
+      const fetcher = vi.fn<BackfillFetcher>(async () => {
+        await signIn(db, ALICE, "gho_alice2", {
+          cipher,
+          siteUrl: "https://grn",
+          mode: "notify",
+        });
+        return searchPage({ hasNextPage, hits: [hit("I_1", at(-10))] });
+      });
+
+      const result = await runBackfill(session, categoryId, fetcher);
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "stored",
+        newItems: 1,
+        window: { kind: "kept" },
+        summary: null,
+      });
+      expect(await trackedIds()).toEqual(["I_1"]);
+      const [window] = await windows();
+      expect(window?.start).toBe(iso(BACKFILL_START));
+      // the reset's now(), not the page's oldest hit
+      expect(Date.parse(window?.end ?? "")).toBeGreaterThan(
+        Date.now() - 60_000,
+      );
+      expect(await syncJob()).toMatchObject({ locked_by: null });
+    },
+  );
+
+  it("finds a comment written in summary mode on a thread from before signup, once notifications are on", async () => {
+    const { session, categoryId } = await setUp();
+    await summaryMode();
+    await runBackfill(session, categoryId, searching());
+    expect(await syncJob()).toBeUndefined();
+
+    const { status } = await signIn(db, ALICE, "gho_alice", {
+      cipher,
+      siteUrl: "https://grn",
+      mode: "notify",
+    });
+    expect(status).toBe("notifications-on");
+    const [window] = await windows();
+    expect(window?.start).toBe(iso(BACKFILL_START));
+
+    const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    const fetcher = searching({
+      hits: [
+        hit("I_2010", "2010-01-01T00:00:00Z", {
+          author: bob,
+          comments: [comment("C_new", now)],
+        }),
+      ],
+    });
+    await runBackfill(
+      { ...session, lease: await claim() },
+      categoryId,
+      fetcher,
+    );
+
+    expect(searchedFor(fetcher)[0]).toMatch(
+      /^involves:alice created:1970-01-01T00:00:00\+00:00\.\.\S+ sort:created-desc$/,
+    );
+    expect(await trackedIds()).toEqual(["C_new"]);
+  });
+});

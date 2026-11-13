@@ -441,7 +441,7 @@ describe("runSnapshotSweep", () => {
       [
         "## 📊 Your reactions so far",
         "",
-        "GRN finished scanning your history. Here's where things stand:",
+        "GitHub-Reactions-Notifier finished scanning your history. Here's a summary of all reactions:",
         "",
         "|   | Issues | Pull requests | Comments | Total |",
         "| --- | ---: | ---: | ---: | ---: |",
@@ -523,5 +523,153 @@ describe("runSnapshotSweep", () => {
       await runSnapshotSweep(session, subscriptionId, responding([reacted()])),
     ).toMatchObject({ ok: true, filled: 1, summary: null });
     expect(await summaries()).toEqual([]);
+  });
+});
+
+describe("summary mode and rescans (M1.2)", () => {
+  const ONE_TIME = "you asked for a one-time summary";
+
+  const syncJobs = async () => {
+    const { rows } = await db.query<{ locked_by: string | null }>(
+      "SELECT locked_by FROM jobs WHERE kind = 'sync'",
+    );
+    return rows;
+  };
+
+  const user = async () => {
+    const { rows } = await db.query<{
+      mode: string;
+      enabled_at: Date;
+      watermark_at: Date;
+      pass_watermark: Date;
+    }>(
+      `SELECT u.mode,
+              (SELECT min(enabled_at) FROM subscription_types) AS enabled_at,
+              (SELECT min(watermark_at) FROM tracked_content) AS watermark_at,
+              (SELECT min(watermark) FROM subscription_passes) AS pass_watermark
+       FROM users u`,
+    );
+    return rows[0];
+  };
+
+  const signInWith = (mode: "notify" | "summary") =>
+    signIn(db, ALICE, "gho_alice", { cipher, siteUrl: "https://grn", mode });
+
+  /** The re-walk a rescan starts, finished: its own tests are in discovery.backfill. */
+  const finishRewalk = () => db.query("DELETE FROM backfill_windows");
+
+  it("deletes the sync job in the transaction that queues a summary-mode summary", async () => {
+    const { session, subscriptionId } = await setUp();
+    await db.query("UPDATE users SET mode = 'summary'");
+    await pending(["I_1"]);
+
+    const result = await runSnapshotSweep(
+      session,
+      subscriptionId,
+      responding([reacted({ HEART: 1 })]),
+    );
+
+    const notices = await summaries();
+    expect(notices).toHaveLength(1);
+    expect(result).toMatchObject({ ok: true, summary: notices[0]?.id });
+    expect(notices[0]?.body).toContain(ONE_TIME);
+    expect(notices[0]?.body).not.toContain("From now on");
+    expect(await syncJobs()).toEqual([]);
+  });
+
+  it("releases the sync job in notify mode", async () => {
+    const { session, subscriptionId } = await setUp();
+    await pending(["I_1"]);
+
+    await runSnapshotSweep(session, subscriptionId, responding([reacted()]));
+
+    expect(await summaries()).toHaveLength(1);
+    expect(await syncJobs()).toEqual([{ locked_by: null }]);
+  });
+
+  it("posts a fresh summary-mode summary after asking again, changing nothing else, and deletes the job again", async () => {
+    const { session, subscriptionId } = await setUp();
+    await db.query("UPDATE users SET mode = 'summary'");
+    await pending(["I_1"]);
+    await runSnapshotSweep(
+      session,
+      subscriptionId,
+      responding([reacted({ HEART: 1 })]),
+    );
+    expect(await syncJobs()).toEqual([]);
+    const before = await user();
+
+    expect((await signInWith("summary")).status).toBe("summary-again");
+
+    expect(await user()).toEqual(before);
+    expect(await syncJobs()).toEqual([{ locked_by: null }]);
+    expect(await snapshots()).toMatchObject([
+      { node_id: "I_1", thumbs_up: null, heart: null },
+    ]);
+    await finishRewalk();
+    const lease = await claim();
+    const result = await runSnapshotSweep(
+      { ...session, lease },
+      subscriptionId,
+      responding([reacted({ HEART: 2 })]),
+    );
+
+    const notices = await summaries();
+    expect(notices).toHaveLength(2);
+    const fresh = notices.find(
+      (notice) => result.ok && notice.id === result.summary,
+    );
+    expect(fresh?.body).toContain("❤️ 2");
+    expect(fresh?.body).toContain(ONE_TIME);
+    expect(await syncJobs()).toEqual([]);
+  });
+
+  it("changes nothing when asked for the summary again before it is queued", async () => {
+    await setUp();
+    await db.query("UPDATE users SET mode = 'summary'");
+    await pending(["I_1"]);
+    const retryAt = () =>
+      db.query("SELECT node_id, retry_at, thumbs_up FROM reaction_snapshots");
+    const before = (await retryAt()).rows;
+
+    expect((await signInWith("summary")).status).toBe("summary-pending");
+
+    expect((await retryAt()).rows).toEqual(before);
+    expect(await syncJobs()).toHaveLength(1);
+    const { rows } = await db.query("SELECT 1 FROM backfill_windows");
+    expect(rows).toEqual([]);
+  });
+
+  it("re-counts every snapshot and posts a fresh notify-mode summary after turning notifications back on", async () => {
+    const { session, subscriptionId } = await setUp();
+    await pending(["I_1", "I_2"]);
+    await runSnapshotSweep(
+      session,
+      subscriptionId,
+      responding([reacted({ HEART: 1 }), reacted()]),
+    );
+    expect(await summaries()).toHaveLength(1);
+
+    expect((await signInWith("summary")).status).toBe("notifications-off");
+    expect(await syncJobs()).toEqual([]);
+    expect((await signInWith("notify")).status).toBe("notifications-on");
+    expect(await syncJobs()).toEqual([{ locked_by: null }]);
+    expect((await snapshots()).every((row) => row.thumbs_up === null)).toBe(
+      true,
+    );
+
+    await finishRewalk();
+    const result = await runSnapshotSweep(
+      { ...session, lease: await claim() },
+      subscriptionId,
+      responding([reacted({ HEART: 5 }), reacted({ ROCKET: 1 })]),
+    );
+
+    const fresh = (await summaries()).find(
+      (notice) => result.ok && notice.id === result.summary,
+    );
+    expect(fresh?.body).toContain("❤️ 5 · 🚀 1");
+    expect(fresh?.body).toContain("From now on, new reactions show up here");
+    expect(await syncJobs()).toEqual([{ locked_by: null }]);
   });
 });

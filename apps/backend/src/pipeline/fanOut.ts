@@ -18,8 +18,9 @@ export interface NewReaction {
 
 /**
  * Fans new reactions out to the users tracking their items (§10), in the producer's
- * transaction. A reaction reaches every user with a source for its item, if it is not older
- * than that source's `enabled_at` for the item's type (FR-6, per reaction). The user's own
+ * transaction. A reaction reaches every user in `notify` mode (M1.2 §4.4) with a source for its
+ * item, if it is not older than that source's `enabled_at` for the item's type (FR-6, per
+ * reaction). A poll that commits after its user switched to summary mode thus queues nothing. The user's own
  * reactions are kept (FR-12). Each reaction gets a `queued` `reaction_notifications` row
  * (`ON CONFLICT DO NOTHING`, so it notifies at most once per user, FR-7), and each user who got
  * one has their digest opened or locked.
@@ -44,6 +45,7 @@ export const fanOut = async (
        AS r(node_id, reactor_id, emoji, reacted_at)
      JOIN content c ON c.node_id = r.node_id
      JOIN content_sources s ON s.node_id = r.node_id
+     JOIN users u ON u.gh_user_id = s.user_id AND u.mode = 'notify'
      JOIN subscription_categories sc ON sc.subscription_id = s.subscription_id
      JOIN subscription_types st ON st.category_id = sc.id AND st.content_type = c.type
      WHERE r.reacted_at >= st.enabled_at

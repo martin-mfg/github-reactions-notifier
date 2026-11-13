@@ -5,7 +5,9 @@
  * so either flow is one click.
  *
  * A random `state`, mirrored in a short-lived cookie, ties the callback to a flow this browser
- * started, and names the flow's action and its FR-2a attempt.
+ * started, and names the flow's action and its FR-2a attempt. The actions are `signin` ("Get
+ * notified about reactions"), `summary` ("Just send me a one-time summary", M1.2 §3) and
+ * `delete`.
  */
 
 import { randomBytes } from "node:crypto";
@@ -26,13 +28,13 @@ import type { Config } from "./config.ts";
 import { defaultConfig } from "./config.ts";
 import type { Database } from "./db.ts";
 import { deleteAccount, signIn } from "./users/accounts.ts";
-import type { GitHubIdentity } from "./users/accounts.ts";
+import type { GitHubIdentity, SignInStatus } from "./users/accounts.ts";
 
-type OAuthAction = "signin" | "delete";
+type OAuthAction = "signin" | "summary" | "delete";
 
 /** The page the flows end on reads this from `?status=`. */
 type Outcome =
-  | "signed-in"
+  | SignInStatus
   | "scope-rejected"
   | "deleted"
   | "deleted-grant-kept"
@@ -41,7 +43,7 @@ type Outcome =
   | "error";
 
 const STATE_COOKIE = "grn_oauth_state";
-const STATE_PATTERN = /^(signin|delete)\.(\d)\.[A-Za-z0-9_-]{22}$/;
+const STATE_PATTERN = /^(signin|summary|delete)\.(\d)\.[A-Za-z0-9_-]{22}$/;
 const STATE_MAX_AGE_SECONDS = 10 * 60;
 
 /**
@@ -98,8 +100,23 @@ const redirect = (res: ApiResponse, location: string, status = 302): void => {
   res.send("");
 };
 
-const finish = (res: ApiResponse, outcome: Outcome): void => {
-  redirect(res, `/?status=${outcome}`);
+/**
+ * Ends a flow on the site's page.
+ *
+ * @param res The response.
+ * @param outcome What the page reports.
+ * @param inbox The user's inbox issue, `owner/repo#number`, which the page links (M1.2 §3).
+ */
+const finish = (
+  res: ApiResponse,
+  outcome: Outcome,
+  inbox: string | null = null,
+): void => {
+  const params = new URLSearchParams({ status: outcome });
+  if (inbox !== null) {
+    params.set("inbox", inbox);
+  }
+  redirect(res, `/?${params.toString()}`);
 };
 
 /**
@@ -156,8 +173,9 @@ export const createOAuthHandlers = (
     );
   };
 
-  const login: ApiHandler = (_req, res) => {
-    startFlow(res, "signin", 0);
+  /** `?mode=summary` is "Just send me a one-time summary"; anything else signs in to notify. */
+  const login: ApiHandler = (req, res) => {
+    startFlow(res, req.query["mode"] === "summary" ? "summary" : "signin", 0);
   };
 
   const deleteAccountHandler: ApiHandler = (req, res) => {
@@ -231,18 +249,29 @@ export const createOAuthHandlers = (
         }
         logger.log("FR-2a: scoped token discarded, grant deleted, restarting");
         res.setHeader("Set-Cookie", stateCookie("", 0));
-        startFlow(res, "signin", flow.attempt + 1);
+        startFlow(res, flow.action, flow.attempt + 1);
         return;
       }
 
       const viewer = await deps.fetchViewer(accessToken);
-      const { isNew, inboxRequested } = await signIn(db, viewer, accessToken, {
-        cipher: deps.cipher(),
-        siteUrl: new URL(settings().redirectUri).origin,
-        ...(deps.config && { config: deps.config }),
+      const { isNew, inboxRequested, status, inbox } = await signIn(
+        db,
+        viewer,
+        accessToken,
+        {
+          cipher: deps.cipher(),
+          siteUrl: new URL(settings().redirectUri).origin,
+          mode: flow.action === "summary" ? "summary" : "notify",
+          ...(deps.config && { config: deps.config }),
+        },
+      );
+      logger.log("signed in", {
+        user: viewer.id,
+        isNew,
+        inboxRequested,
+        status,
       });
-      logger.log("signed in", { user: viewer.id, isNew, inboxRequested });
-      finish(res, "signed-in");
+      finish(res, status, inbox);
     } catch (err) {
       logger.error(err);
       finish(res, "error");

@@ -5,6 +5,9 @@ import { logger } from "@grn/core";
 import type { Queryable } from "../db.ts";
 import { renderReactionSummary } from "../inbox/notices.ts";
 import type { ReactionSummary } from "../inbox/notices.ts";
+import { deleteJob, releaseSync } from "../jobs/queue.ts";
+import type { Lease } from "../jobs/queue.ts";
+import type { UserMode } from "../users/mode.ts";
 
 /** GitHub's `ReactionContent` values; each is a `reaction_snapshots` column, lowercased. */
 export const REACTION_CONTENTS = [
@@ -47,11 +50,11 @@ const SUBSCRIPTION_SNAPSHOTS = `
  * A subscription is complete (M1.1 §3) when none of its categories has a backfill window or a
  * thread scan left, and none of its items has a pending snapshot.
  *
- * @param client Client inside the task's fenced transaction.
+ * @param client Client inside the task's fenced transaction, or the sign-in transaction.
  * @param scope The user and subscription.
  * @returns Whether the subscription is complete.
  */
-const isSubscriptionComplete = async (
+export const isSubscriptionComplete = async (
   client: Queryable,
   scope: SummaryScope,
 ): Promise<boolean> => {
@@ -136,41 +139,99 @@ const loadSummary = async (
   };
 };
 
+/** The leased `sync` task that may queue the summary. */
+interface SummaryTask {
+  lease: Pick<Lease, "id" | "lockedBy">;
+  /** GRN's site, linked from summary mode's closing line (M1.2 §8.2). */
+  siteUrl: string;
+  /** The task's log fields. */
+  context: Record<string, string>;
+}
+
+/** A summary {@link queueSummaryIfComplete} queued. */
+export interface QueuedSummary {
+  /** The summary's `deliver` job id. */
+  jobId: string;
+  /** The user is in summary mode, so their `sync` job was deleted (M1.2 §4.2). */
+  syncDeleted: boolean;
+}
+
 /**
  * Queues the subscription's backfill summary if the subscription is complete (M1.1 §3). Call it
  * at the end of every transaction that removed outstanding work: a deleted backfill window, a
  * deleted thread scan, or a filled or deleted snapshot. The transaction that completes the
- * subscription is the only one that finds it complete, so the summary is queued exactly once,
- * with no stored flag.
+ * subscription is the only one that finds it complete, so the summary is queued exactly once
+ * per completion, with no stored flag. A sign-in that restarts the scan makes it incomplete
+ * again (M1.2 §6), so a fresh summary follows the next completion.
  *
  * The summary is a one-off `deliver` job (`{ body }`), carrying its own id as the idempotency
- * marker, like FR-17's notice.
+ * marker, like FR-17's notice. It is worded for the user's mode. In summary mode, the same
+ * transaction deletes the `sync` job instead of the caller releasing it (M1.2 §4.2): GRN does
+ * no more work for the user. End the task with {@link finishSyncTask}.
  *
  * @param client Client inside the task's fenced transaction.
  * @param scope The user and subscription.
- * @param context The task's log fields.
- * @returns The summary's job id, or `null` if the subscription isn't complete.
+ * @param task The task that may queue the summary.
+ * @param task.lease The task's lease; in summary mode, its `sync` job is deleted.
+ * @param task.siteUrl GRN's site, linked from summary mode's closing line.
+ * @param task.context The task's log fields.
+ * @returns The queued summary, or `null` if the subscription isn't complete.
+ * @throws {LeaseLostError} If the lease was lost while deleting the `sync` job.
  */
 export const queueSummaryIfComplete = async (
   client: Queryable,
   scope: SummaryScope,
-  context: Record<string, string>,
-): Promise<string | null> => {
+  { lease, siteUrl, context }: SummaryTask,
+): Promise<QueuedSummary | null> => {
   if (!(await isSubscriptionComplete(client, scope))) {
     return null;
   }
+  const { rows } = await client.query<{ mode: UserMode }>(
+    "SELECT mode FROM users WHERE gh_user_id = $1",
+    [scope.userId],
+  );
+  const mode = rows[0]?.mode ?? "notify";
   const summary = await loadSummary(client, scope);
   const jobId = randomUUID();
   await client.query(
     `INSERT INTO jobs (id, kind, user_id, payload) VALUES ($1, 'deliver', $2, $3)`,
-    [jobId, scope.userId, renderReactionSummary(jobId, summary)],
+    [
+      jobId,
+      scope.userId,
+      renderReactionSummary(jobId, summary, { mode, siteUrl }),
+    ],
   );
+  const syncDeleted = mode === "summary";
+  if (syncDeleted) {
+    await deleteJob(client, lease);
+  }
   logger.log("backfill summary queued", {
     ...context,
     subscription: scope.subscriptionId,
     notice: jobId,
+    mode,
     items: summary.items.reduce((sum, item) => sum + item.count, 0),
     withReactions: summary.withReactions,
+    ...(syncDeleted && { syncJob: "deleted" }),
   });
-  return jobId;
+  return { jobId, syncDeleted };
+};
+
+/**
+ * Ends a task that may have queued the summary: releases the `sync` job, unless queueing the
+ * summary deleted it (M1.2 §4.2).
+ *
+ * @param client Client inside the task's last, fenced transaction.
+ * @param lease The task's lease.
+ * @param summary What {@link queueSummaryIfComplete} returned, or `null` if it didn't run.
+ * @throws {LeaseLostError} If the lease was lost.
+ */
+export const finishSyncTask = async (
+  client: Queryable,
+  lease: Pick<Lease, "id" | "lockedBy">,
+  summary: QueuedSummary | null,
+): Promise<void> => {
+  if (!summary?.syncDeleted) {
+    await releaseSync(client, lease);
+  }
 };

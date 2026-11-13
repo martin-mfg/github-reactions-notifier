@@ -16,8 +16,8 @@ import { defaultConfig } from "../config.ts";
 import { validThreadScans } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
-import { releaseSync, withLease } from "../jobs/queue.ts";
-import { queueSummaryIfComplete } from "../summary/summary.ts";
+import { withLease } from "../jobs/queue.ts";
+import { finishSyncTask, queueSummaryIfComplete } from "../summary/summary.ts";
 import { scoreSql } from "../sync/score.ts";
 
 import {
@@ -230,11 +230,15 @@ export const runThreadScans = async (
         ? await queueSummaryIfComplete(
             client,
             { userId: lease.userId, subscriptionId },
-            context,
+            { lease, siteUrl: session.siteUrl, context },
           )
         : null;
-      await releaseSync(client, lease);
-      return { newItems: found, newSnapshots: snapshots, summary };
+      await finishSyncTask(client, lease, summary);
+      return {
+        newItems: found,
+        newSnapshots: snapshots,
+        summary: summary?.jobId ?? null,
+      };
     },
   );
 

@@ -3,14 +3,18 @@ import type { GitHubOutcome, MutationRequest } from "@grn/core";
 
 import { defaultConfig } from "../config.ts";
 import type { Config } from "../config.ts";
+import { withTransaction } from "../db.ts";
 import type { Database, Queryable } from "../db.ts";
 import { checkClockOffset } from "../github/clock.ts";
 import { sendWrite } from "../github/writes.ts";
 import type { WriteContext, WriteResult } from "../github/writes.ts";
 import {
+  LeaseLostError,
   deleteJob,
+  lockSyncAndUser,
   readDispatchBucket,
   releaseDeliver,
+  renewLease,
   withLease,
 } from "../jobs/queue.ts";
 import type { Lease } from "../jobs/queue.ts";
@@ -381,12 +385,15 @@ const finishDelivered = async (
  *   the pause's end, `retry-after` or `x-ratelimit-reset + CLOCK_MARGIN`; a limit that names
  *   no wait pauses for the backoff. The job keeps its `run_at`.
  * - A transient failure backs the job off, and alerts.
- * - A permanent failure deletes all of the user's jobs, `sync` included.
+ * - A permanent failure deletes all of the user's jobs, `sync` included. Its transaction locks
+ *   the user's `sync` job row and `users` row before it renews the lease (M1.2 §7), so it
+ *   can't deadlock with a sign-in that holds `sync` and deletes the digest.
  *
  * @param session The leased job.
  * @param result The failure.
  * @param context The job, for logs.
  * @returns How the job ended.
+ * @throws {LeaseLostError} If the lease was lost; nothing is changed then.
  */
 const settleFailure = (
   session: DeliverSession,
@@ -398,8 +405,12 @@ const settleFailure = (
   const backoffSeconds =
     config.dispatchBackoffBaseSeconds *
     2 ** Math.min(Math.max(lease.attempts - 1, 0), config.dispatchMaxExponent);
-  return withLease(session.db, lease, async (client) => {
-    if (result.kind === "permanent") {
+  if (result.kind === "permanent") {
+    return withTransaction<DeliverResult>(session.db, async (client) => {
+      await lockSyncAndUser(client, lease.userId);
+      if (!(await renewLease(client, lease))) {
+        throw new LeaseLostError(lease);
+      }
       const { rowCount } = await client.query(
         "DELETE FROM jobs WHERE user_id = $1",
         [lease.userId],
@@ -412,7 +423,9 @@ const settleFailure = (
         },
       );
       return "failed";
-    }
+    });
+  }
+  return withLease<DeliverResult>(session.db, lease, async (client) => {
     if (result.kind === "rate-limited") {
       const { rows } = await client.query<{ until: Date }>(
         `UPDATE dispatch_bucket SET level = 1, level_at = greatest(

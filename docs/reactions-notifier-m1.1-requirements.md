@@ -280,7 +280,7 @@ mentions nobody (§11). Target layout, with numbers for illustration:
 ```markdown
 ## 📊 Your reactions so far
 
-GRN finished scanning your history. Here's where things stand:
+GitHub-Reactions-Notifier finished scanning your history. Here's a summary of all reactions:
 
 |             | Issues | Pull requests | Comments | Total |
 |-------------|-------:|--------------:|---------:|------:|
@@ -301,7 +301,7 @@ From now on, new reactions show up here as they arrive.
 ```markdown
 ## 📊 Your reactions so far
 
-GRN finished scanning your history and found no issues, pull requests or comments of yours.
+GitHub-Reactions-Notifier finished scanning your history and found no issues, pull requests or comments of yours.
 
 From now on, new reactions show up here as they arrive.
 

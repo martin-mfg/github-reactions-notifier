@@ -44,9 +44,13 @@ const BACKFILL_FINISHED = `
                   JOIN subscription_categories c ON c.id = ts.category_id
                   WHERE c.subscription_id = s.id)`;
 
+/** Whether user `$1` polls and runs incremental discovery: not in summary mode (M1.2 §4.1). */
+const POLLS = `EXISTS (SELECT 1 FROM users u WHERE u.gh_user_id = $1 AND u.mode = 'notify')`;
+
 /**
  * The user's tasks, one row each, with their scores (§9.1): every item due for a poll (the
- * poll's score is its top item's), every category due for incremental discovery, every
+ * poll's score is its top item's), every category due for incremental discovery (neither in
+ * summary mode, M1.2 §4.1), every
  * backfill window, every thread scan, and every subscription with eligible snapshot rows once
  * its backfill is finished (M1.1 §4.1). A snapshot's score is over its eligible rows: `wait`
  * is the longest-waiting row's, `age` the freshest item's. `$1` is the user, `$2` `D`, `$3` `D_discovery`,
@@ -62,6 +66,7 @@ const CANDIDATES = `
          })} AS score
   FROM tracked_content t
   WHERE t.user_id = $1 AND t.last_checked_at <= now() - make_interval(secs => $2)
+    AND ${POLLS}
   UNION ALL
   SELECT 'discovery', c.id::text, c.id::text,
          ${scoreSql({
@@ -73,6 +78,7 @@ const CANDIDATES = `
   FROM subscription_categories c
   JOIN subscriptions s ON s.id = c.subscription_id
   WHERE s.user_id = $1 AND c.last_checked_at <= now() - make_interval(secs => $3)
+    AND ${POLLS}
   UNION ALL
   SELECT 'backfill', w.category_id::text, w.category_id::text,
          ${scoreSql({
@@ -116,7 +122,8 @@ const CANDIDATES = `
 /**
  * Scores the user's tasks afresh and picks the top one (§9.1), with a stable tiebreak and no
  * jitter. If none is eligible, the result says when the first poll, discovery or deferred
- * snapshot (of a subscription whose backfill is finished) will be.
+ * snapshot (of a subscription whose backfill is finished) will be. In summary mode, only the
+ * snapshot counts (M1.2 §4.1).
  *
  * @param client Client to read with.
  * @param userId The job's user.
@@ -150,13 +157,14 @@ export const chooseSyncTask = async (
       : { kind: top.kind, categoryId: top.target_id, score: top.score };
   }
 
-  // without tracked items or categories (no user has neither), check again after `D`
+  // without tracked items or categories (no notify-mode user has neither) or deferred
+  // snapshots, check again after `D`
   const { rows: idle } = await client.query<{ until: Date }>(
     `SELECT greatest(now(), coalesce(least(
-       (SELECT min(last_checked_at) FROM tracked_content WHERE user_id = $1)
+       (SELECT min(last_checked_at) FROM tracked_content WHERE user_id = $1 AND ${POLLS})
          + make_interval(secs => $2),
        (SELECT min(c.last_checked_at) FROM subscription_categories c
-        JOIN subscriptions s ON s.id = c.subscription_id WHERE s.user_id = $1)
+        JOIN subscriptions s ON s.id = c.subscription_id WHERE s.user_id = $1 AND ${POLLS})
          + make_interval(secs => $3),
        (SELECT min(r.retry_at) FROM reaction_snapshots r
         JOIN content_sources cs ON cs.user_id = r.user_id AND cs.node_id = r.node_id

@@ -13,6 +13,7 @@ import type { Database } from "../db.ts";
 import { renderRevokedNotice } from "../inbox/notices.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
 import type { Lease } from "../jobs/queue.ts";
+import type { UserMode } from "../users/mode.ts";
 
 import { evaluateBudget, readBudget, storeRateLimit } from "./budget.ts";
 import { checkClockOffset } from "./clock.ts";
@@ -218,8 +219,9 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
  * - `rate-limited`: due after `retry-after`, or at `x-ratelimit-reset + CLOCK_MARGIN`. A
  *   secondary limit that names no wait waits `max(60 s, syncRetrySeconds)`.
  * - `transient`: due after `syncRetrySeconds`.
- * - `unauthorized` (FR-17): sets `token_status = 'revoked'` and queues the notice. The job is
- *   then no longer due. If the user signed in again meanwhile, their new token is left alone.
+ * - `unauthorized` (FR-17): sets `token_status = 'revoked'` and queues the notice, worded for
+ *   the user's mode (M1.2 §4.3). The job is then no longer due. If the user signed in again
+ *   meanwhile, their new token is left alone.
  *
  * @param session The leased `sync` job.
  * @param failure The failure to settle.
@@ -233,16 +235,22 @@ export const settleSyncFailure = async (
   const { lease } = session;
   await withLease(session.db, lease, async (client) => {
     if (failure.kind === "unauthorized") {
-      const { rowCount } = await client.query(
+      const { rows: revoked } = await client.query<{ mode: UserMode }>(
         `UPDATE users SET token_status = 'revoked'
-         WHERE gh_user_id = $1 AND token_enc = $2 AND token_status = 'active'`,
+         WHERE gh_user_id = $1 AND token_enc = $2 AND token_status = 'active'
+         RETURNING mode`,
         [lease.userId, session.tokenEnc],
       );
-      if (rowCount === 1) {
+      const mode = revoked[0]?.mode;
+      if (mode !== undefined) {
         const jobId = randomUUID();
         await client.query(
           `INSERT INTO jobs (id, kind, user_id, payload) VALUES ($1, 'deliver', $2, $3)`,
-          [jobId, lease.userId, renderRevokedNotice(jobId, session.siteUrl)],
+          [
+            jobId,
+            lease.userId,
+            renderRevokedNotice(jobId, session.siteUrl, mode),
+          ],
         );
         logger.log("FR-17: token revoked, notice queued", {
           ...describe(session),

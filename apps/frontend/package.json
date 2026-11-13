@@ -6,6 +6,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "test": "vitest",
     "lint": "astro sync && eslint",
     "typecheck": "astro sync && tsc -p tsconfig.typecheck.json"
   },
@@ -17,6 +18,7 @@
     "@types/react-dom": "19.3.0",
     "astro": "^7.3.8",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "vitest": "catalog:default"
   }
 }

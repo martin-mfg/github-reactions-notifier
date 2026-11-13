@@ -4,6 +4,7 @@ import { defaultConfig } from "../config.ts";
 import type { Config } from "../config.ts";
 import { withTransaction } from "../db.ts";
 import type { Database, Queryable } from "../db.ts";
+import type { UserMode } from "../users/mode.ts";
 
 type JobKind = "sync" | "deliver";
 
@@ -192,6 +193,46 @@ export const renewLease = async (
     [lease.id, lease.lockedBy],
   );
   return rowCount === 1;
+};
+
+/**
+ * Locks a user's `sync` job row, if they have one, and then their `users` row (M1.2 §7). Every
+ * transaction that writes both, or deletes a user's jobs from outside a `sync` task, takes
+ * these locks first and in this order: a `sync` task's transaction locks its job row first by
+ * renewing its lease, so the order can't deadlock with one.
+ *
+ * Without a `sync` row, only the `users` row is locked. Waiting for that lock may have let a
+ * sign-in create the row, and touching it now would take the locks in reverse. So the locks
+ * are then given back, by rolling back to a savepoint, and taken again in order. Only sign-in
+ * creates `sync` rows, under the `users` lock, so none can appear once that lock is held.
+ *
+ * @param client Client inside the transaction.
+ * @param userId The user's `gh_user_id`.
+ * @returns The user's mode, or `null` if the user doesn't exist.
+ */
+export const lockSyncAndUser = async (
+  client: Queryable,
+  userId: string,
+): Promise<UserMode | null> => {
+  const findSync = (lock: string) =>
+    client.query(
+      `SELECT 1 FROM jobs WHERE user_id = $1 AND kind = 'sync' ${lock}`,
+      [userId],
+    );
+  for (;;) {
+    await client.query("SAVEPOINT lock_sync_and_user");
+    const { rows: sync } = await findSync("FOR UPDATE");
+    const { rows } = await client.query<{ mode: UserMode }>(
+      "SELECT mode FROM users WHERE gh_user_id = $1 FOR UPDATE",
+      [userId],
+    );
+    // READ COMMITTED: this sees a sync row committed while the users lock was awaited
+    if (sync.length > 0 || (await findSync("")).rows.length === 0) {
+      await client.query("RELEASE SAVEPOINT lock_sync_and_user");
+      return rows[0]?.mode ?? null;
+    }
+    await client.query("ROLLBACK TO SAVEPOINT lock_sync_and_user");
+  }
 };
 
 /**

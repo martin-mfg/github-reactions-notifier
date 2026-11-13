@@ -375,6 +375,43 @@ describe("runDeliver: comments", () => {
     expect(rows).toEqual([{ outcome: "delivered" }]);
   });
 
+  it("loses the lease of a digest leased before notifications were turned off, without posting (M1.2 §5)", async () => {
+    const user = await signUp("alice", "grn-inbox/inbox#7");
+    await db.query(
+      `INSERT INTO content (node_id, type, repo_full_name, url, title)
+       VALUES ('I_1', 'Issue', 'octo/repo', 'https://github.com/octo/repo/issues/1', 'Bug')`,
+    );
+    await db.query(
+      `INSERT INTO content_sources (user_id, node_id, subscription_id)
+       SELECT user_id, 'I_1', id FROM subscriptions WHERE user_id = $1`,
+      [user],
+    );
+    const { rows: reactions } = await db.query<NewReaction>(
+      `INSERT INTO reaction_events (node_id, reactor_id, emoji, reacted_at, reactor_login)
+       VALUES ('I_1', 'U_bob', 'HEART', now() - interval '10 seconds', 'bob')
+       RETURNING node_id, reactor_id, emoji, reacted_at, reactor_login`,
+    );
+    await withTransaction(db, (client) => fanOut(client, reactions));
+    await advance();
+    const lease = await claim();
+
+    await signIn(
+      db,
+      { id: user, login: "alice", createdAt: "2015-01-01T00:00:00Z" },
+      "gho_alice",
+      { cipher, siteUrl: "https://grn", mode: "summary" },
+    );
+    const github = fakeGitHub(() => ok({ id: 1 }));
+
+    await expect(deliver(lease, github.send)).rejects.toBeInstanceOf(
+      LeaseLostError,
+    );
+    expect(github.requests).toHaveLength(0);
+    expect(await job(lease.id)).toBeUndefined();
+    const { rows } = await db.query("SELECT 1 FROM reaction_notifications");
+    expect(rows).toEqual([]);
+  });
+
   it("waits, untouched, when the bucket has no token", async () => {
     const user = await signUp("alice", "grn-inbox/inbox#7");
     const id = await insertNotice(user);

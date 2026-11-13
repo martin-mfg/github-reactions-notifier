@@ -289,6 +289,70 @@ describe("chooseSyncTask: the snapshot sweep (M1.1 §4.1)", () => {
   });
 });
 
+describe("chooseSyncTask: summary mode (M1.2 §4.1)", () => {
+  const summaryMode = () =>
+    db.query("UPDATE users SET mode = 'summary' WHERE gh_user_id = 'U_alice'");
+
+  it("never polls or discovers, even with due items and categories", async () => {
+    const { categoryId } = await setUp();
+    await summaryMode();
+    await windowAt("0 seconds", "0 seconds");
+    await discovered("1 day", "1 minute");
+    await track("I_hot", "1 day", "1 minute");
+
+    // in notify mode, both would beat the backfill window that scores 0
+    expect(await choose()).toMatchObject({ kind: "backfill", categoryId });
+
+    await db.query("DELETE FROM backfill_windows");
+    await db.query(
+      `INSERT INTO thread_scans (category_id, thread_node_id, since_at, thread_created_at)
+       VALUES ($1, 'I_thread', now(), now())`,
+      [categoryId],
+    );
+    expect(await choose()).toMatchObject({ kind: "threadScan", categoryId });
+  });
+
+  it("still runs the snapshot sweep", async () => {
+    await setUp();
+    await summaryMode();
+    await db.query("DELETE FROM backfill_windows");
+    await track("I_snap", "0 seconds", "1 minute");
+    await db.query(
+      `INSERT INTO content_sources (user_id, node_id, subscription_id)
+       SELECT 'U_alice', 'I_snap', id FROM subscriptions`,
+    );
+    await db.query(
+      `INSERT INTO reaction_snapshots (user_id, node_id, retry_at)
+       VALUES ('U_alice', 'I_snap', now() - interval '1 hour')`,
+    );
+
+    expect(await choose()).toMatchObject({ kind: "snapshot" });
+  });
+
+  it("idles until the first deferred snapshot, ignoring items and categories", async () => {
+    await setUp();
+    await summaryMode();
+    await db.query("DELETE FROM backfill_windows");
+    await discovered("1 minute", "1 minute");
+    await track("I_snap", "1 minute", "1 minute");
+    await db.query(
+      `INSERT INTO content_sources (user_id, node_id, subscription_id)
+       SELECT 'U_alice', 'I_snap', id FROM subscriptions`,
+    );
+    await db.query(
+      `INSERT INTO reaction_snapshots (user_id, node_id, retry_at)
+       VALUES ('U_alice', 'I_snap', now() + interval '1 hour')`,
+    );
+
+    // in notify mode, the item's poll (in 2 minutes) would wake the job first
+    const task = await choose();
+    expect(task.kind).toBe("idle");
+    expect(
+      task.kind === "idle" && (task.until.getTime() - Date.now()) / 1000,
+    ).toBeCloseTo(3600, -1);
+  });
+});
+
 describe("runSyncTask", () => {
   it("runs the top task", async () => {
     const { session, categoryId } = await setUp();

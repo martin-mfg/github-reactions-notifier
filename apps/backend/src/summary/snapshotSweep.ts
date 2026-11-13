@@ -15,11 +15,12 @@ import { defaultConfig } from "../config.ts";
 import { validReactionSnapshot } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
-import { releaseSync, withLease } from "../jobs/queue.ts";
+import { withLease } from "../jobs/queue.ts";
 
 import {
   REACTION_CONTENTS,
   SNAPSHOT_COLUMNS,
+  finishSyncTask,
   queueSummaryIfComplete,
 } from "./summary.ts";
 import type { ReactionContent } from "./summary.ts";
@@ -271,11 +272,16 @@ export const runSnapshotSweep = async (
         ? await queueSummaryIfComplete(
             client,
             { userId: lease.userId, subscriptionId },
-            context,
+            { lease, siteUrl: session.siteUrl, context },
           )
         : null;
-    await releaseSync(client, lease);
-    return { filled, deleted, deferredInSubscription, summary };
+    await finishSyncTask(client, lease, summary);
+    return {
+      filled,
+      deleted,
+      deferredInSubscription,
+      summary: summary?.jobId ?? null,
+    };
   });
 
   for (const { row, verdict } of verdicts) {

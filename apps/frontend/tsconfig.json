@@ -1,6 +1,12 @@
 {
   "extends": ["../../tsconfig.base.json"],
-  "include": [".astro/types.d.ts", "src", "astro.config.ts"],
+  "include": [
+    ".astro/types.d.ts",
+    "src",
+    "tests",
+    "astro.config.ts",
+    "vitest.config.ts"
+  ],
   "compilerOptions": {
     "lib": ["DOM", "ESNext"],
     "module": "esnext",

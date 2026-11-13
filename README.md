@@ -67,16 +67,30 @@ Missing something you need? [Tell me](#feedback).
 
 ## Only want the summary?
 
-There's no "summary only" option yet. Sign in, wait for the summary to arrive in your inbox,
-then delete your account (see below). Your inbox issue and the summary stay.
+Choose **"Just send me a one-time summary"** on the website instead of "Get notified about
+reactions". The app scans your history, posts the summary to your inbox issue, and then stops:
+it makes no further requests for you and posts nothing else.
+
+You can switch at any time with the same two buttons:
+
+- **"Just send me a one-time summary"** pauses notifications. Notifications not yet posted are
+  dropped, and reactions added during the pause are never notified one by one. If you choose it
+  again after your summary arrived, the app rescans your history and posts a fresh summary.
+- **"Get notified about reactions"** turns notifications back on. The app rescans your history
+  and posts a fresh summary, then notifies you about new reactions again.
+
+A rescan reads your whole history again, so it takes as long as the first scan and uses your
+API quota the same way.
 
 ## Stopping and deleting your data
 
 - **Delete your account** with the button on the website. This deletes all data the app
   holds about you and revokes its access to your GitHub account. Your inbox issue stays on
   GitHub.
+- **Pausing notifications** with "Just send me a one-time summary" stops all requests once
+  your summary is posted. Your data stays, so you can turn notifications on again later.
 - **Unsubscribing from the inbox issue** stops the notifications, but the app keeps running
-  in the background. Delete your account to stop it completely.
+  in the background. Pause notifications or delete your account to stop it.
 - **Revoking the app** in your GitHub settings (Settings → Applications → Authorized OAuth
   Apps) also stops it. The app posts a short note to your inbox when it notices. Your data
   is kept until you delete your account, so signing in again resumes where it stopped.

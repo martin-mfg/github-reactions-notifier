@@ -15,7 +15,8 @@ import { validBackfill } from "../github/queryValidation.ts";
 import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
-import { queueSummaryIfComplete } from "../summary/summary.ts";
+import { finishSyncTask, queueSummaryIfComplete } from "../summary/summary.ts";
+import type { QueuedSummary } from "../summary/summary.ts";
 
 import {
   author,
@@ -51,7 +52,12 @@ type WindowChange =
   /** `window_end` moved back to the page's oldest hit (or one second before it, if stuck). */
   | { kind: "moved"; windowEnd: Date }
   /** All the window's pages are stored. */
-  | { kind: "deleted" };
+  | { kind: "deleted" }
+  /**
+   * A sign-in reset the window after the page was read (M1.2 §7): the page's items are stored,
+   * but the window is left as it is.
+   */
+  | { kind: "kept" };
 
 export type BackfillResult =
   | {
@@ -75,6 +81,11 @@ export type BackfillResult =
 interface WindowRow {
   window_start: Date;
   window_end: Date;
+  /**
+   * `window_end` as Postgres prints it, to the microsecond, for the compare-and-swap (M1.2 §7).
+   * A `Date` keeps only milliseconds.
+   */
+  window_end_exact: string;
   login: string;
   subscription_id: string;
 }
@@ -158,7 +169,8 @@ const loadWindow = async (
   categoryId: string,
 ): Promise<WindowRow> => {
   const { rows } = await client.query<WindowRow>(
-    `SELECT w.window_start, w.window_end, u.login, c.subscription_id
+    `SELECT w.window_start, w.window_end, w.window_end::text AS window_end_exact,
+            u.login, c.subscription_id
      FROM backfill_windows w
      JOIN subscription_categories c ON c.id = w.category_id
      JOIN subscriptions s ON s.id = c.subscription_id
@@ -212,7 +224,8 @@ const nextWindowEnd = (
  * their comments; `involves:` also matches mentions and assignments), inserts a `thread_scans`
  * row for every hit with more comments than its inline page, and moves `window_end` back to
  * the page's oldest hit, or deletes the window after its last page. An interruption therefore
- * loses at most one page.
+ * loses at most one page. The window is moved or deleted only if its `window_end` is still the
+ * one the page was read with: a sign-in may have reset it meanwhile (M1.2 §7).
  *
  * If `viewer.login` is not the login the search was built with, the login is refreshed, the
  * page is discarded, the window is left untouched, and the job is due again at once.
@@ -322,10 +335,8 @@ export const runBackfill = async (
     search.pageInfo.hasNextPage,
   );
 
-  const { newItems, newSnapshots, newThreadScans, summary } = await withLease(
-    session.db,
-    lease,
-    async (client) => {
+  const { newItems, newSnapshots, newThreadScans, windowChanged, summary } =
+    await withLease(session.db, lease, async (client) => {
       const found = await storeDiscovered(
         client,
         {
@@ -348,34 +359,41 @@ export const runBackfill = async (
           longThreads.map((thread) => thread.createdAt),
         ],
       );
-      let queued: string | null = null;
+      // Compare-and-swap: a reset window (M1.2 §6) must not move back or go away.
+      let queued: QueuedSummary | null = null;
+      let windowChanged: boolean;
       if (windowEnd === null) {
-        await client.query(
-          "DELETE FROM backfill_windows WHERE category_id = $1 AND window_start = $2",
-          [categoryId, window.window_start],
+        const { rowCount: deleted } = await client.query(
+          `DELETE FROM backfill_windows
+           WHERE category_id = $1 AND window_start = $2 AND window_end = $3::timestamptz`,
+          [categoryId, window.window_start, window.window_end_exact],
         );
-        // only removed work can complete the subscription
-        queued = await queueSummaryIfComplete(
-          client,
-          { userId: lease.userId, subscriptionId: window.subscription_id },
-          context,
-        );
+        windowChanged = deleted === 1;
+        if (windowChanged) {
+          // only removed work can complete the subscription
+          queued = await queueSummaryIfComplete(
+            client,
+            { userId: lease.userId, subscriptionId: window.subscription_id },
+            { lease, siteUrl: session.siteUrl, context },
+          );
+        }
       } else {
-        await client.query(
+        const { rowCount: moved } = await client.query(
           `UPDATE backfill_windows SET window_end = $3
-           WHERE category_id = $1 AND window_start = $2`,
-          [categoryId, window.window_start, windowEnd],
+           WHERE category_id = $1 AND window_start = $2 AND window_end = $4::timestamptz`,
+          [categoryId, window.window_start, windowEnd, window.window_end_exact],
         );
+        windowChanged = moved === 1;
       }
-      await releaseSync(client, lease);
+      await finishSyncTask(client, lease, queued);
       return {
         newItems: found,
         newSnapshots: snapshots,
         newThreadScans: rowCount ?? 0,
-        summary: queued,
+        windowChanged,
+        summary: queued?.jobId ?? null,
       };
-    },
-  );
+    });
 
   if (stuck) {
     logger.error(
@@ -387,13 +405,23 @@ export const runBackfill = async (
       },
     );
   }
+  const change: WindowChange = windowChanged
+    ? windowEnd === null
+      ? { kind: "deleted" }
+      : { kind: "moved", windowEnd }
+    : { kind: "kept" };
   logger.log("backfill", {
     ...context,
     hits: hits.length,
     newItems,
     newSnapshots,
     newThreadScans,
-    windowEnd: windowEnd?.toISOString() ?? "deleted",
+    windowEnd:
+      change.kind === "moved"
+        ? change.windowEnd.toISOString()
+        : change.kind === "deleted"
+          ? "deleted"
+          : "kept: reset meanwhile",
     ...(summary !== null && { summary }),
   });
   return {
@@ -402,8 +430,7 @@ export const runBackfill = async (
     newItems,
     newSnapshots,
     newThreadScans,
-    window:
-      windowEnd === null ? { kind: "deleted" } : { kind: "moved", windowEnd },
+    window: change,
     summary,
   };
 };

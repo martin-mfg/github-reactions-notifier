@@ -1,3 +1,6 @@
+import { NOTIFY_BUTTON, SUMMARY_BUTTON } from "../users/mode.ts";
+import type { UserMode } from "../users/mode.ts";
+
 import { emojiOf, plainText } from "./digestBody.ts";
 
 /** A one-off message to the user's inbox: the payload of an already-rendered `deliver` job. */
@@ -6,23 +9,35 @@ export interface NoticePayload {
 }
 
 /**
- * Renders FR-17's notice, posted to the user's inbox after their token was revoked or expired.
- * Like every comment, it mentions nobody (§11).
+ * Renders FR-17's notice, posted to the user's inbox after their token was revoked or expired,
+ * in the user's mode (M1.2 §8.3). Like every comment, it mentions nobody (§11).
  *
  * @param jobId The notice's `deliver` job id, embedded as the idempotency marker (§12).
  * @param siteUrl GRN's site, where the user signs in again.
+ * @param mode The user's mode when the token was found revoked.
  * @returns The comment's body.
  */
 export const renderRevokedNotice = (
   jobId: string,
   siteUrl: string,
+  mode: UserMode,
 ): NoticePayload => ({
   body: [
-    "GitHub Reactions Notifier can no longer read your reactions: its access to your GitHub " +
-      "account was revoked or has expired. Polling has stopped, so no further reactions " +
-      "will be posted here.",
-    "",
-    `To resume, sign in again at ${siteUrl}.`,
+    ...(mode === "summary"
+      ? [
+          "GitHub-Reactions-Notifier can no longer read your content: its access to your " +
+            "GitHub account was revoked or has expired. Scanning has stopped, so your summary " +
+            "can't be completed.",
+          "",
+          `To resume, choose "${SUMMARY_BUTTON}" again at ${siteUrl}.`,
+        ]
+      : [
+          "GitHub-Reactions-Notifier can no longer read your reactions: its access to your " +
+            "GitHub account was revoked or has expired. Polling has stopped, so no further " +
+            "reactions will be posted here.",
+          "",
+          `To resume, sign in again at ${siteUrl}.`,
+        ]),
     "",
     `<!-- grn:${jobId} -->`,
   ].join("\n"),
@@ -58,22 +73,31 @@ const sum = (values: Array<number>): number =>
   values.reduce((total, value) => total + value, 0);
 
 /**
- * Renders the backfill summary (M1.1 §5.2), posted once after GRN has scanned the user's
- * history: items found per type, items with reactions, reactions in total and per emoji (by
- * count, descending, zeros left out). Without any items, a shortened form. Like every
- * comment, it mentions nobody (§11).
+ * Renders the backfill summary (M1.1 §5.2), posted after GRN has scanned the user's history:
+ * items found per type, items with reactions, reactions in total and per emoji (by count,
+ * descending, zeros left out). Without any items, a shortened form. Its closing line depends
+ * on the user's mode when it is queued (M1.2 §8.2). Like every comment, it mentions nobody
+ * (§11).
  *
  * @param jobId The summary's `deliver` job id, embedded as the idempotency marker (§12).
  * @param summary The numbers.
+ * @param closing What the closing line depends on.
+ * @param closing.mode The user's mode when the summary is queued.
+ * @param closing.siteUrl GRN's site, linked from summary mode's closing line.
  * @returns The comment's body.
  */
 export const renderReactionSummary = (
   jobId: string,
   summary: ReactionSummary,
+  { mode, siteUrl }: { mode: UserMode; siteUrl: string },
 ): NoticePayload => {
   const heading = "## 📊 Your reactions so far";
   const footer = [
-    "From now on, new reactions show up here as they arrive.",
+    mode === "summary"
+      ? "That's it: you asked for a one-time summary, so GitHub-Reactions-Notifier won't post " +
+        `here again unless you ask. For a fresh summary, choose "${SUMMARY_BUTTON}" again at ${siteUrl}. To ` +
+        `get notified about new reactions, choose "${NOTIFY_BUTTON}" there.`
+      : "From now on, new reactions show up here as they arrive.",
     "",
     `<!-- grn:${jobId} -->`,
   ];
@@ -83,8 +107,8 @@ export const renderReactionSummary = (
       body: [
         heading,
         "",
-        "GRN finished scanning your history and found no issues, pull requests or comments " +
-          "of yours.",
+        "GitHub-Reactions-Notifier finished scanning your history and found no issues, pull " +
+          "requests or comments of yours.",
         "",
         ...footer,
       ].join("\n"),
@@ -118,7 +142,7 @@ export const renderReactionSummary = (
     body: [
       heading,
       "",
-      "GRN finished scanning your history. Here's where things stand:",
+      "GitHub-Reactions-Notifier finished scanning your history. Here's a summary of all reactions:",
       "",
       ...table,
       "",

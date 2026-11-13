@@ -202,6 +202,47 @@ describe("sign-in callback", () => {
     expect(await count("users")).toBe(1);
   });
 
+  it("signs up in summary mode from ?mode=summary, and keeps that action through an FR-2a restart (M1.2 §3)", async () => {
+    const exchangeCode = vi
+      .fn<OAuthDeps["exchangeCode"]>()
+      .mockResolvedValueOnce({ accessToken: "scoped", hasScope: true })
+      .mockResolvedValueOnce({ accessToken: "clean", hasScope: false });
+    const { login, callback } = setup({ exchangeCode });
+
+    const start = await call(login, { query: { mode: "summary" } });
+    expect(stateFrom(start.headers["location"])).toMatch(/^summary\.0\./);
+    const first = await returnFromGitHub(callback, start);
+    expect(stateFrom(first.headers["location"])).toMatch(/^summary\.1\./);
+    const second = await returnFromGitHub(callback, first);
+
+    expect(second.headers["location"]).toBe("/?status=summary-requested");
+    const { rows } = await db.query<{ mode: string }>("SELECT mode FROM users");
+    expect(rows).toEqual([{ mode: "summary" }]);
+  });
+
+  it("starts a notify sign-in for any other mode", async () => {
+    const { login } = setup();
+    const res = await call(login, { query: { mode: "anything" } });
+    expect(stateFrom(res.headers["location"])).toMatch(/^signin\.0\./);
+  });
+
+  it("reports the mode switch, and links the inbox issue once it is open", async () => {
+    const { login, callback } = setup();
+    await returnFromGitHub(callback, await call(login, {}));
+    await db.query(
+      "UPDATE notification_channels SET target = 'grn-inbox/inbox#12'",
+    );
+
+    const res = await returnFromGitHub(
+      callback,
+      await call(login, { query: { mode: "summary" } }),
+    );
+
+    expect(res.headers["location"]).toBe(
+      "/?status=notifications-off-summary-pending&inbox=grn-inbox%2Finbox%2312",
+    );
+  });
+
   it("rejects a state that does not match the cookie", async () => {
     const { login, callback, deps } = setup();
     const start = await call(login, {});

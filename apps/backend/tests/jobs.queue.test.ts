@@ -10,12 +10,14 @@ import {
 } from "vitest";
 
 import { defaultConfig } from "../src/config.ts";
+import { withTransaction } from "../src/db.ts";
 import type { Database } from "../src/db.ts";
 import {
   LeaseLostError,
   claimJob,
   deleteJob,
   findBudgetHeldJobs,
+  lockSyncAndUser,
   readDispatchBucket,
   reapExpiredLeases,
   releaseDeliver,
@@ -636,5 +638,88 @@ describe("queue status readers", () => {
       bucketLevel: 1,
       bucketPausedUntil: expect.any(Date) as Date,
     });
+  });
+});
+
+describe("lockSyncAndUser (M1.2 §7)", () => {
+  /** Runs it in a transaction whose statements are logged, with `after` run after each. */
+  const run = async (
+    userId: string,
+    after?: (text: string) => Promise<void>,
+  ) => {
+    const log: Array<string> = [];
+    const logged: Database = {
+      query: db.query.bind(db),
+      connect: async () => {
+        const client = await db.connect();
+        return {
+          release: client.release.bind(client),
+          query: (async (text: string, values?: Array<unknown>) => {
+            log.push(text.replace(/\s+/g, " ").trim());
+            const result = await client.query(text, values);
+            await after?.(text);
+            return result;
+          }) as Database["query"],
+        };
+      },
+    };
+    const mode = await withTransaction(logged, (client) =>
+      lockSyncAndUser(client, userId),
+    );
+    return { mode, log: log.filter((t) => t !== "BEGIN" && t !== "COMMIT") };
+  };
+
+  const SYNC =
+    "SELECT 1 FROM jobs WHERE user_id = $1 AND kind = 'sync' FOR UPDATE";
+  const USERS = "SELECT mode FROM users WHERE gh_user_id = $1 FOR UPDATE";
+  const RECHECK = "SELECT 1 FROM jobs WHERE user_id = $1 AND kind = 'sync'";
+
+  it("locks the sync job row, then the users row", async () => {
+    await insertUser("U_1");
+    await insertJob("sync", "U_1");
+
+    expect(await run("U_1")).toEqual({
+      mode: "notify",
+      log: [
+        "SAVEPOINT lock_sync_and_user",
+        SYNC,
+        USERS,
+        "RELEASE SAVEPOINT lock_sync_and_user",
+      ],
+    });
+  });
+
+  it("returns null for a missing user", async () => {
+    expect((await run("U_none")).mode).toBeNull();
+  });
+
+  it("locks again in order when a sync job appeared while the users lock was awaited", async () => {
+    await insertUser("U_1");
+    let created = false;
+
+    // Stands in for a concurrent sign-in's commit. PGlite has one session, so the rollback to
+    // the savepoint undoes the stand-in too: it is inserted again, as a committed row survives.
+    const { mode, log } = await run("U_1", async (text) => {
+      if (
+        (text.includes("FROM users") && !created) ||
+        text.startsWith("ROLLBACK TO")
+      ) {
+        created = true;
+        await insertJob("sync", "U_1");
+      }
+    });
+
+    expect(mode).toBe("notify");
+    expect(log).toEqual([
+      "SAVEPOINT lock_sync_and_user",
+      SYNC,
+      USERS,
+      RECHECK,
+      "ROLLBACK TO SAVEPOINT lock_sync_and_user",
+      "SAVEPOINT lock_sync_and_user",
+      SYNC,
+      USERS,
+      "RELEASE SAVEPOINT lock_sync_and_user",
+    ]);
   });
 });

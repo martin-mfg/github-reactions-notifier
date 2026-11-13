@@ -77,7 +77,12 @@ const rowsAbout = async (userId: string) => ({
 describe("signIn", () => {
   it("creates every signup row for a new user", async () => {
     const result = await signIn(db, alice, "gho_alice", { cipher, siteUrl });
-    expect(result).toEqual({ isNew: true, inboxRequested: true });
+    expect(result).toEqual({
+      isNew: true,
+      inboxRequested: true,
+      status: "signed-in",
+      inbox: null,
+    });
 
     const { rows: users } = await db.query<{
       login: string;
@@ -184,7 +189,12 @@ describe("signIn", () => {
         `gho_${status}`,
         { cipher, siteUrl },
       );
-      expect(result).toEqual({ isNew: false, inboxRequested: false });
+      expect(result).toEqual({
+        isNew: false,
+        inboxRequested: false,
+        status: "signed-in",
+        inbox: null,
+      });
       const { rows } = await db.query<{ login: string; token_status: string }>(
         "SELECT login, token_status FROM users",
       );
@@ -383,6 +393,11 @@ describe("deleteAccount", () => {
     await signIn(db, alice, "gho_1", { cipher, siteUrl });
     await deleteAccount(db, alice.id);
     const result = await signIn(db, alice, "gho_2", { cipher, siteUrl });
-    expect(result).toEqual({ isNew: true, inboxRequested: true });
+    expect(result).toEqual({
+      isNew: true,
+      inboxRequested: true,
+      status: "signed-in",
+      inbox: null,
+    });
   });
 });
