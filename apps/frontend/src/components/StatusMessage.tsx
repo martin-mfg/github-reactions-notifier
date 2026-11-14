@@ -89,10 +89,14 @@ export function StatusMessage() {
   const index =
     message.inbox === undefined ? -1 : message.text.indexOf(INBOX_WORDS);
   if (index === -1) {
-    return <p role="status">{message.text}</p>;
+    return (
+      <p className="home-status" role="status">
+        {message.text}
+      </p>
+    );
   }
   return (
-    <p role="status">
+    <p className="home-status" role="status">
       {message.text.slice(0, index)}
       <a href={message.inbox}>{INBOX_WORDS}</a>
       {message.text.slice(index + INBOX_WORDS.length)}

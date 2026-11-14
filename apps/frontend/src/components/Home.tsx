@@ -1,4 +1,11 @@
-export function Home() {
+import type { ReactNode } from "react";
+
+interface HomeProps {
+  /** Shown at the top of the grey box, above the buttons: the status message. */
+  children?: ReactNode;
+}
+
+export function Home({ children }: HomeProps) {
   return (
     <section>
       <p>
@@ -16,6 +23,7 @@ export function Home() {
         </a>
       </p>
       <div className="home-box">
+        {children}
         <form className="home-option" method="get" action="api/login">
           <button className="home-button-primary" type="submit">
             Get notified about reactions
