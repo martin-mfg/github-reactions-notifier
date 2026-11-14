@@ -1,11 +1,11 @@
 import type { BackfillCommentFragment } from "./generated/authoredBackfill.js";
 import { graphqlDocument } from "./graphqlDocument.js";
 
-/** `id_<index>` and `since_<index>` per thread. */
+/** `id_<index>` and `since_<index>` per thread, and the subscribed user's `userId`. */
 type ThreadScanQueryVariables = Record<
   `id_${number}` | `since_${number}`,
   string
->;
+> & { userId: string };
 
 /** One page of a thread's comments; `null` if the node is gone, `{}` if not a thread. */
 type ScannedThread =
@@ -21,6 +21,10 @@ type ScannedThread =
   | Record<PropertyKey, never>;
 
 interface ThreadScanQuery {
+  /**
+   * Shadow testing: the subscribed user, looked up by `$userId`. `null` or `{}` if that is no
+   * User, which the backend's validator rejects.
+   */
   viewer: { id: string; login: string };
   rateLimit: { cost: number } | null;
   [alias: `thread_${number}`]: ScannedThread;
@@ -56,10 +60,12 @@ const buildThreadScanDocument = (count: number) => {
 
   // fragment must match queries/authoredBackfill.graphql, which generates its type
   return graphqlDocument<ThreadScanQuery, ThreadScanQueryVariables>(`
-query threadScan(${variables}) {
-  viewer {
-    id
-    login
+query threadScan($userId: ID!, ${variables}) {
+  viewer: node(id: $userId) {
+    ... on User {
+      id
+      login
+    }
   }
   ${threadFields}
   rateLimit {

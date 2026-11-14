@@ -24,6 +24,7 @@ import {
   isComment,
   present,
   rejectForeignViewer,
+  subjectOf,
   taskContext,
 } from "./results.ts";
 import { insertPendingSnapshots, storeDiscovered } from "./store.ts";
@@ -253,6 +254,7 @@ export const runBackfill = async (
         start: window.window_start,
         end: window.window_end,
       }),
+      userId: lease.userId,
     },
     {
       query: "backfill",
@@ -264,7 +266,8 @@ export const runBackfill = async (
     await settleSyncFailure(session, result.failure);
     return result;
   }
-  const { viewer, search } = result.data;
+  const { search } = result.data;
+  const viewer = subjectOf(result.data.viewer);
   const foreign = await rejectForeignViewer(session, viewer.id, context);
   if (foreign) {
     return { ok: false, failure: foreign };

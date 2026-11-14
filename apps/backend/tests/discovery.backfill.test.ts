@@ -475,6 +475,8 @@ describe("runBackfill", () => {
     expect(searchedFor(fetcher)).toEqual([
       "involves:alice created:1970-01-01T00:00:00+00:00..2026-10-01T12:00:00+00:00 sort:created-desc",
     ]);
+    // shadow testing: the user is looked up by id, not as the token's viewer
+    expect(vi.mocked(fetcher).mock.calls[0]?.[0].userId).toBe("U_alice");
     expect(await trackedIds()).toEqual(["C_own", "C_own2", "I_own"]);
 
     const rows = await tracked();
@@ -849,6 +851,7 @@ describe("runThreadScans", () => {
     });
     const since = iso(new Date(Date.parse(at(0)) - 1000).toISOString());
     expect(fetcher.mock.calls[0]?.[0]).toEqual({
+      userId: "U_alice",
       id_0: "I_long",
       since_0: since,
       id_1: "I_done",
@@ -898,6 +901,7 @@ describe("runThreadScans", () => {
     );
 
     expect(Object.keys(fetcher.mock.calls[0]?.[0] ?? {})).toEqual([
+      "userId",
       "id_0",
       "since_0",
       "id_1",

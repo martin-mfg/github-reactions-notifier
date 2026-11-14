@@ -58,6 +58,23 @@ export const commentItem = (
   lastEventAt: comment.createdAt,
 });
 
+/** A query's `viewer: node(id: $userId) { ... on User }`, once it is known to be the User. */
+export type Subject<V> = Exclude<V, Record<PropertyKey, never> | null>;
+
+/**
+ * Shadow testing: `viewer` is the subscribed user, looked up by id, so the response types allow
+ * `null` (no such node) and `{}` (a node of another type). The query's validator rejects both.
+ *
+ * @param viewer The response's `viewer`, after validation.
+ * @returns The same value, typed as the User.
+ */
+export const subjectOf = <V>(viewer: V): Subject<V> => {
+  if (viewer === null || typeof viewer !== "object" || !("id" in viewer)) {
+    throw new Error("viewer is not a User despite validation");
+  }
+  return viewer as Subject<V>;
+};
+
 /**
  * Someone else's content must never be tracked as the user's. A `viewer` other than the job's
  * user is retried as transient (§12), but alerted: this means a mixed-up token or a bug.

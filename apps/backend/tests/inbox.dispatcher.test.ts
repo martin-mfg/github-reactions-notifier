@@ -229,7 +229,7 @@ describe("runDeliver: opening", () => {
       method: "POST",
       path: "/repos/grn-inbox/inbox/issues",
       token: "ghp_machine",
-      body: { title: "Reactions inbox of alice" },
+      body: { title: "Test inbox of alice" },
     });
     expect(JSON.stringify(request?.body)).toContain(`grn:${lease.id}`);
     expect(await target(user)).toBe("grn-inbox/inbox#42");

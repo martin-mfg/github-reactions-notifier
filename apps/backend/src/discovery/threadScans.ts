@@ -162,7 +162,7 @@ export const runThreadScans = async (
     throw new Error(`No thread scans in category ${categoryId}`);
   }
 
-  const variables: ThreadScanQueryVariables = {};
+  const variables: ThreadScanQueryVariables = { userId: lease.userId };
   // `since` excludes comments created at exactly `since`: re-read `since_at`'s second.
   rows.forEach((row, index) => {
     variables[`id_${index}`] = row.thread_node_id;

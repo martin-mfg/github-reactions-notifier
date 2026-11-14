@@ -19,8 +19,10 @@ import {
   author,
   present,
   rejectForeignViewer,
+  subjectOf,
   taskContext,
 } from "./results.ts";
+import type { Subject } from "./results.ts";
 import { storeDiscovered } from "./store.ts";
 import type { ContentType, DiscoveredItem, DiscoveryScope } from "./store.ts";
 
@@ -34,7 +36,7 @@ const defaultFetcher: Fetcher = createGraphQLFetcher(
   "bearer",
 );
 
-type Viewer = AuthoredDiscoveryQuery["viewer"];
+type Viewer = Subject<AuthoredDiscoveryQuery["viewer"]>;
 type Node<C extends { nodes: Array<unknown> | null }> = NonNullable<
   NonNullable<C["nodes"]>[number]
 >;
@@ -187,7 +189,7 @@ export const runIncrementalDiscovery = async (
   const result = await runQuery(
     session,
     fetcher,
-    {},
+    { userId: lease.userId },
     {
       query: "discovery",
       validate: validIncremental,
@@ -197,7 +199,7 @@ export const runIncrementalDiscovery = async (
     await settleSyncFailure(session, result.failure);
     return result;
   }
-  const { viewer } = result.data;
+  const viewer = subjectOf(result.data.viewer);
   const foreign = await rejectForeignViewer(session, viewer.id, context);
   if (foreign) {
     return { ok: false, failure: foreign };
