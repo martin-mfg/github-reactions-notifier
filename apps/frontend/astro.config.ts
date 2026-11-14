@@ -28,7 +28,8 @@ export default defineConfig({
         },
       ],
       // Marks the site as a prototype: a banner on every page and an "alpha" badge.
-      customCss: ["./src/styles/prototype.css"],
+      // `home.css` styles the home page.
+      customCss: ["./src/styles/prototype.css", "./src/styles/home.css"],
       components: {
         Banner: "./src/components/PrototypeBanner.astro",
         // Adds the icon's attribution.

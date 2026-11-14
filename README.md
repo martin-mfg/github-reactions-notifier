@@ -1,6 +1,8 @@
-<img src="docs/icon.png" alt="" width="96" align="right">
-
-# GitHub Reactions Notifier
+<div align="center">
+  <img src="docs/icon.png" alt="GitHub Reactions Notifier Logo" width="96">
+  <h1>GitHub Reactions Notifier</h1>
+  <p>Get a GitHub notification when someone reacts to your issues, PRs or comments.</p>
+</div>
 
 > [!WARNING]
 > **This is a prototype (alpha).** It may have bugs, lose data, or be shut down at any time.
@@ -10,16 +12,16 @@
 GitHub notifies you about comments, mentions and reviews, but never about reactions.
 When someone adds 👍, ❤️ or 🎉 to your issue, you only find out by accident.
 
-GitHub Reactions Notifier fills this gap. Sign in once, and you get a GitHub notification
+GitHub Reactions Notifier fills this gap. Sign up once, and you get a GitHub notification
 whenever someone reacts to your issues, pull requests or comments.
 
-**[Sign in here](https://TODO-SITE-URL)**
+**[Sign up here](https://github-reactions-notifier.vercel.app/)**
 
 ## How it works
 
-1. **Sign in with GitHub.** The app asks for no permissions beyond your public profile.
+1. **Sign in with GitHub.** The app asks for no permissions beyond your public profile. Signing in proves the account is yours, so nobody else can sign you up, and lets the app read your public activity using your own GitHub rate limit.
 2. **The app opens an inbox issue for you** in this repository and mentions you in it.
-   That subscribes you to the issue, so GitHub notifies you about every comment on it.
+   That subscribes you to the issue, so GitHub notifies you about every update inside.
 3. **It scans your history** and posts a one-time **summary** of the reactions your content
    has received so far: how many items it found, how many reactions they have, and the total
    per emoji.
@@ -34,23 +36,23 @@ The people named in your inbox are **not** mentioned or notified. Only you are.
 
 ## What's included, and what isn't yet
 
-| Included                                      | Not yet included                                      |
-| --------------------------------------------- | ----------------------------------------------------- |
-| Issues you opened                             | Discussions and discussion comments                   |
-| Pull requests you opened                      | Pull request reviews and review inline comments              |
-| Your comments on issues and pull requests     | Commit comments and releases                          |
-| Content in public repositories                | Content in private repositories                       |
-| Your content from all time, however old       | Content by others in repositories you own             |
-| Notifications a few minutes after a reaction  | Other notification channels like [Atom](https://en.wikipedia.org/wiki/Atom_(web_standard)) or Webhooks                  |
-| A one-time summary of your existing reactions | Filters (e.g. only open issues)     |
-|                                               | A notification when a reaction is removed             |
+| Included                                      | Not yet included                                                                                         |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Issues you opened                             | Discussions and discussion comments                                                                      |
+| Pull requests you opened                      | Pull request reviews and review inline comments                                                          |
+| Your comments on issues and pull requests     | Commit comments and releases                                                                             |
+| Content in public repositories                | Content in private repositories                                                                          |
+| Your content from all time, however old       | Content by others in repositories you own                                                                |
+| Notifications a few minutes after a reaction  | Other notification channels like [Atom](<https://en.wikipedia.org/wiki/Atom_(web_standard)>) or Webhooks |
+| A one-time summary of your existing reactions | Filters (e.g. only open issues)                                                                          |
+|                                               | A notification when a reaction is removed                                                                |
 
 Missing something you need? [Tell me](#feedback).
 
 ## Good to know
 
 - **Your inbox is public.** Anyone can see the reactions on your content and who added them.
-  Reactions are public on GitHub anyway, but your inbox collects them in one place.
+  Reactions are public on GitHub anyway.
   Content from private repositories never appears there.
 - **Reactions from before you signed in are never notified one by one.** They only count
   towards the summary.
@@ -73,27 +75,13 @@ it makes no further requests for you and posts nothing else.
 
 You can switch at any time with the same two buttons:
 
-- **"Just send me a one-time summary"** pauses notifications. Notifications not yet posted are
-  dropped, and reactions added during the pause are never notified one by one. If you choose it
+- **"Just send me a one-time summary"** stops notifications. If you click it
   again after your summary arrived, the app rescans your history and posts a fresh summary.
 - **"Get notified about reactions"** turns notifications back on. The app rescans your history
   and posts a fresh summary, then notifies you about new reactions again.
 
 A rescan reads your whole history again, so it takes as long as the first scan and uses your
 API quota the same way.
-
-## Stopping and deleting your data
-
-- **Delete your account** with the button on the website. This deletes all data the app
-  holds about you and revokes its access to your GitHub account. Your inbox issue stays on
-  GitHub.
-- **Pausing notifications** with "Just send me a one-time summary" stops all requests once
-  your summary is posted. Your data stays, so you can turn notifications on again later.
-- **Unsubscribing from the inbox issue** stops the notifications, but the app keeps running
-  in the background. Pause notifications or delete your account to stop it.
-- **Revoking the app** in your GitHub settings (Settings → Applications → Authorized OAuth
-  Apps) also stops it. The app posts a short note to your inbox when it notices. Your data
-  is kept until you delete your account, so signing in again resumes where it stopped.
 
 ## Known limitations of the prototype
 
@@ -105,7 +93,7 @@ API quota the same way.
 ## Feedback
 
 This prototype exists to find out whether the app is worth building further.
-Please [open an issue](https://github.com/martin-mfg/github-reactions-notifier/issues) and
+Please [start a discussion](https://github.com/martin-mfg/github-reactions-notifier/discussions) and
 tell me:
 
 - Do you find it useful? Would you keep using it?
