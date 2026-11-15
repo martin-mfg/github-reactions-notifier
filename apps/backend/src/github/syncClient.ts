@@ -42,20 +42,31 @@ export interface RequestLog {
 }
 
 /**
- * What a sync task's one log line reports besides its own result (NFR-7): its score and its
- * requests. `[WHY]` Vercel caps the log lines of a request (256), and a cron run works many
- * tasks, so each logs one line instead of one per step. Problems are still logged on their own.
+ * Collects a sync job's one log line (NFR-7): the task's summary, its score and its requests,
+ * written by {@link writeTaskLog} once the job ends. `[WHY]` Vercel caps the log lines of a
+ * request (256), and a cron run works many jobs, so each logs one line instead of one per
+ * step. Problems are still logged on their own.
  */
 export interface TaskLog {
-  /** Fields for the line, such as the task's score. */
+  /** The line's message: the task's name once it logged its summary, else `sync task`. */
+  message: string;
+  /** The task's context and result, or until it logged them, the `sync task` details. */
+  summary: Record<string, unknown>;
+  /** Fields for the line whatever the task logs, such as its score. */
   fields: Record<string, unknown>;
   requests: Array<RequestLog>;
-  /** Whether the task has written its line. */
-  written: boolean;
 }
 
+/** @returns An empty {@link TaskLog}, written as `sync task` unless the task logs its summary. */
+export const createTaskLog = (): TaskLog => ({
+  message: "sync task",
+  summary: {},
+  fields: {},
+  requests: [],
+});
+
 /**
- * Writes a task's one log line: its result `fields`, then the session's {@link TaskLog}.
+ * Records a task's summary for the session's {@link TaskLog}, or without one logs it at once.
  *
  * @param session The leased `sync` job.
  * @param message The task's name, such as `poll`.
@@ -67,14 +78,30 @@ export const logTask = (
   fields: Record<string, unknown>,
 ): void => {
   const { taskLog } = session;
-  logger.log(message, {
-    ...fields,
-    ...taskLog?.fields,
-    ...(taskLog && { requests: taskLog.requests }),
-  });
-  if (taskLog) {
-    taskLog.written = true;
+  if (!taskLog) {
+    logger.log(message, fields);
+    return;
   }
+  taskLog.message = message;
+  taskLog.summary = fields;
+};
+
+/**
+ * Writes a {@link TaskLog}'s line: its summary, its fields, its requests, then `job`.
+ *
+ * @param taskLog The collected line.
+ * @param job The job's own fields, such as its `result` and `durationMs`.
+ */
+export const writeTaskLog = (
+  taskLog: TaskLog,
+  job: Record<string, unknown> = {},
+): void => {
+  logger.log(taskLog.message, {
+    ...taskLog.summary,
+    ...taskLog.fields,
+    ...(taskLog.requests.length > 0 && { requests: taskLog.requests }),
+    ...job,
+  });
 };
 
 /** Why a query brought no usable data. {@link settleSyncFailure} decides what comes next. */

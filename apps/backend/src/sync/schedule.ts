@@ -1,11 +1,10 @@
-import { logger } from "@grn/core";
-
 import { defaultConfig } from "../config.ts";
 import type { Queryable } from "../db.ts";
 import { runBackfill } from "../discovery/backfill.ts";
 import { runIncrementalDiscovery } from "../discovery/incremental.ts";
 import { runThreadScans } from "../discovery/threadScans.ts";
-import type { SyncSession, TaskLog } from "../github/syncClient.ts";
+import { createTaskLog, writeTaskLog } from "../github/syncClient.ts";
+import type { SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
 import { runPoll } from "../polling/poll.ts";
 import { runSnapshotSweep } from "../summary/snapshotSweep.ts";
@@ -186,7 +185,9 @@ export const chooseSyncTask = async (
  * is eligible, the job is released until the first item or category is due again.
  *
  * Each task logs one line (NFR-7): its own summary, which also carries its score and requests
- * (see {@link TaskLog}), or, if it wrote none, a `sync task` line.
+ * (see `TaskLog`), or, if it logged none, a `sync task` line. With the session's
+ * `taskLog`, the line is only collected there, for the caller to write with the job's result;
+ * without it, the line is written here once the task ends.
  *
  * @param session The leased `sync` job.
  * @returns The task that ran.
@@ -199,11 +200,19 @@ export const runSyncTask = async (session: SyncSession): Promise<SyncTask> => {
     lease.userId,
     session.config ?? defaultConfig,
   );
-  const taskLog: TaskLog = {
-    fields: { ...("score" in task && { score: task.score }) },
-    requests: [],
-    written: false,
+  const taskLog = session.taskLog ?? createTaskLog();
+  // idle, a failure or an early return: the task logs no summary of its own
+  taskLog.summary = {
+    user: lease.userId,
+    kind: lease.kind,
+    task: task.kind,
+    ...("categoryId" in task && { category: task.categoryId }),
+    ...("subscriptionId" in task && { subscription: task.subscriptionId }),
+    ...("until" in task && { until: task.until.toISOString() }),
   };
+  if ("score" in task) {
+    taskLog.fields["score"] = task.score;
+  }
   const taskSession: SyncSession = { ...session, taskLog };
   try {
     switch (task.kind) {
@@ -229,18 +238,8 @@ export const runSyncTask = async (session: SyncSession): Promise<SyncTask> => {
         break;
     }
   } finally {
-    // idle, a failure or an early return: the task wrote no line of its own
-    if (!taskLog.written) {
-      logger.log("sync task", {
-        user: lease.userId,
-        kind: lease.kind,
-        task: task.kind,
-        ...("categoryId" in task && { category: task.categoryId }),
-        ...("subscriptionId" in task && { subscription: task.subscriptionId }),
-        ...("until" in task && { until: task.until.toISOString() }),
-        ...taskLog.fields,
-        ...(taskLog.requests.length > 0 && { requests: taskLog.requests }),
-      });
+    if (!session.taskLog) {
+      writeTaskLog(taskLog);
     }
   }
   return task;

@@ -6,6 +6,8 @@ import type { AccessTokenCipher } from "@grn/core";
 import { defaultConfig } from "../config.ts";
 import type { Config } from "../config.ts";
 import type { Database } from "../db.ts";
+import { createTaskLog, writeTaskLog } from "../github/syncClient.ts";
+import type { TaskLog } from "../github/syncClient.ts";
 import { runDeliver } from "../inbox/dispatcher.ts";
 import type { DeliverResult, MachineAccount } from "../inbox/dispatcher.ts";
 import {
@@ -70,6 +72,7 @@ const increment = <K extends string>(
  * @param deps The worker's dependencies.
  * @param lease The leased job.
  * @param stats The counters to update.
+ * @param taskLog Collects the task's log line, for the caller to write.
  * @returns The task that ran, or `noToken`.
  * @throws {LeaseLostError} If the lease was lost.
  */
@@ -77,6 +80,7 @@ const runSyncJob = async (
   deps: WorkerDeps,
   lease: Lease,
   stats: WorkerStats,
+  taskLog: TaskLog,
 ): Promise<SyncTask["kind"] | "noToken"> => {
   const { db, cipher, siteUrl, config } = deps;
   const stored = await loadToken(db, lease.userId, cipher);
@@ -92,6 +96,7 @@ const runSyncJob = async (
     tokenEnc: stored.tokenEnc,
     siteUrl,
     ...(config && { config }),
+    taskLog,
   });
   increment(stats.syncTasks, task.kind);
   return task.kind;
@@ -107,7 +112,8 @@ const runSyncJob = async (
  *
  * A job that throws keeps its lease, so the reaper retries it and alerts on repeats (§7.3);
  * the worker goes on with the next one. A failed claim ends the invocation. It never throws.
- * Each job's result and duration are logged as `job finished` (NFR-7).
+ * Each job's result and duration are logged on its one line (NFR-7): a `sync` job's task line
+ * (see {@link TaskLog}), or a `deliver` job's `job finished`.
  *
  * @param deps The worker's dependencies.
  * @returns The invocation's counters, also logged.
@@ -172,10 +178,11 @@ export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
       kind: lease.kind,
     };
     const jobStartedAt = now();
+    const taskLog = lease.kind === "sync" ? createTaskLog() : null;
     let result: string;
     try {
-      if (lease.kind === "sync") {
-        result = await runSyncJob(deps, lease, stats);
+      if (taskLog) {
+        result = await runSyncJob(deps, lease, stats, taskLog);
       } else {
         const delivered = await runDeliver({
           db: deps.db,
@@ -201,11 +208,16 @@ export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
       }
     }
     // the job's wall-clock: one sync task (§15's serial-poll time) or one delivery
-    logger.log("job finished", {
+    const job = {
       ...context,
       result,
       durationMs: Math.round(now() - jobStartedAt),
-    });
+    };
+    if (taskLog) {
+      writeTaskLog(taskLog, job);
+    } else {
+      logger.log("job finished", job);
+    }
   }
 
   stats.durationSeconds = Math.round((now() - startedAt) / 1000);

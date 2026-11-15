@@ -1198,7 +1198,8 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
       gone thread, a transient write failure, a rescued lease, a dispatcher pause) are warnings.
     - Durations: every GraphQL query logs its `query` name and `durationMs`; every
       machine-account request logs its `method` and `durationMs` (a success as `machine account
-      request`); every job logs `job finished` with its `result` and `durationMs`.
+      request`); every job logs its `result` and `durationMs`: a `sync` job on its task's one
+      line, a `deliver` job as `job finished`.
     - The budget guard logs `budget guard: request refused` when it stops a query, and each cron
       run logs `budget guard: sync jobs held back` for the jobs the claim skips for budget. Each
       cron run logs `dispatch bucket` (`bucketLevel`, `bucketPausedUntil`); every write logs the

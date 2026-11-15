@@ -16,7 +16,11 @@ import type { Database } from "../src/db.ts";
 import { runBackfill } from "../src/discovery/backfill.ts";
 import { runIncrementalDiscovery } from "../src/discovery/incremental.ts";
 import { runThreadScans } from "../src/discovery/threadScans.ts";
-import { logTask } from "../src/github/syncClient.ts";
+import {
+  createTaskLog,
+  logTask,
+  writeTaskLog,
+} from "../src/github/syncClient.ts";
 import type { SyncSession } from "../src/github/syncClient.ts";
 import { claimJob } from "../src/jobs/queue.ts";
 import { runPoll } from "../src/polling/poll.ts";
@@ -498,6 +502,27 @@ describe("runSyncTask", () => {
       await expect(runSyncTask(session)).rejects.toThrow("boom");
 
       expect(linesLogged()).toEqual(["sync task"]);
+    });
+
+    it("only collects the line in the session's task log, for the caller to write", async () => {
+      const { session } = await setUp();
+      const taskLog = createTaskLog();
+      vi.mocked(runBackfill).mockImplementationOnce((taskSession) => {
+        logTask(taskSession, "backfill", { user: "U_alice", hits: 3 });
+        return Promise.resolve({ ok: true, status: "window-done" } as never);
+      });
+
+      await runSyncTask({ ...session, taskLog });
+
+      expect(linesLogged()).toEqual([]);
+      writeTaskLog(taskLog, { result: "backfill", durationMs: 5 });
+      expect(logger.log).toHaveBeenCalledWith("backfill", {
+        user: "U_alice",
+        hits: 3,
+        score: expect.any(Number) as number,
+        result: "backfill",
+        durationMs: 5,
+      });
     });
   });
 });

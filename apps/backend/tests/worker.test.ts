@@ -13,6 +13,7 @@ import {
 
 import { defaultConfig } from "../src/config.ts";
 import type { Database } from "../src/db.ts";
+import { logTask } from "../src/github/syncClient.ts";
 import { runDeliver } from "../src/inbox/dispatcher.ts";
 import {
   LeaseLostError,
@@ -141,11 +142,14 @@ describe("runWorker", () => {
     expect(logger.log).toHaveBeenCalledWith("worker finished", stats);
   });
 
-  it("logs each job's result and duration", async () => {
+  it("logs each job's result and duration, a sync job's on its task line", async () => {
     await signUpAlice();
     const clock = fakeClock();
-    vi.mocked(runSyncTask).mockImplementationOnce(async ({ db, lease }) => {
+    vi.mocked(runSyncTask).mockImplementationOnce(async (session) => {
+      const { db, lease } = session;
       clock.t += 1500;
+      session.taskLog?.requests.push({ query: "backfill", durationMs: 12 });
+      logTask(session, "backfill", { user: "U_alice", hits: 3 });
       await withLease(db, lease, (client) => releaseSync(client, lease, FAR));
       return { kind: "backfill", categoryId: "1", score: 1 };
     });
@@ -159,13 +163,61 @@ describe("runWorker", () => {
       result: "posted",
       durationMs: 0,
     });
-    expect(logger.log).toHaveBeenCalledWith("job finished", {
+    expect(logger.log).toHaveBeenCalledWith("backfill", {
       user: "U_alice",
       kind: "sync",
+      hits: 3,
+      requests: [{ query: "backfill", durationMs: 12 }],
       result: "backfill",
       durationMs: 1500,
     });
+    const messages = vi
+      .mocked(logger.log)
+      .mock.calls.map(([message]) => message);
+    expect(messages.filter((m) => m === "job finished")).toHaveLength(1);
   });
+
+  it("logs a sync task line with the result when the task logged none", async () => {
+    await signUpAlice();
+    vi.mocked(runSyncTask).mockRejectedValueOnce(new Error("boom"));
+
+    await runWorker(deps(fakeClock()));
+
+    expect(logger.log).toHaveBeenCalledWith("sync task", {
+      user: "U_alice",
+      kind: "sync",
+      result: "error",
+      durationMs: 0,
+    });
+  });
+
+  it.each([
+    { result: "error", toError: () => new Error("boom") },
+    {
+      result: "lease-lost",
+      toError: (lease: Parameters<typeof runSyncTask>[0]["lease"]) =>
+        new LeaseLostError(lease),
+    },
+  ])(
+    "still logs the task's summary when it throws after logging it ($result)",
+    async ({ result, toError }) => {
+      await signUpAlice();
+      vi.mocked(runSyncTask).mockImplementationOnce((session) => {
+        logTask(session, "backfill", { user: "U_alice", hits: 3 });
+        return Promise.reject(toError(session.lease));
+      });
+
+      await runWorker(deps(fakeClock()));
+
+      expect(logger.log).toHaveBeenCalledWith("backfill", {
+        user: "U_alice",
+        kind: "sync",
+        hits: 3,
+        result,
+        durationMs: 0,
+      });
+    },
+  );
 
   /** Queues a message for Alice, due after `runAt` (a Postgres interval). */
   const queueMessage = (runAt: string) =>

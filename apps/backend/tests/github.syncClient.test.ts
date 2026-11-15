@@ -16,12 +16,12 @@ import {
 
 import { defaultConfig } from "../src/config.ts";
 import type { Database } from "../src/db.ts";
-import { runQuery, settleSyncFailure } from "../src/github/syncClient.ts";
-import type {
-  SyncFailure,
-  SyncSession,
-  TaskLog,
+import {
+  createTaskLog,
+  runQuery,
+  settleSyncFailure,
 } from "../src/github/syncClient.ts";
+import type { SyncFailure, SyncSession } from "../src/github/syncClient.ts";
 import { LeaseLostError, claimJob } from "../src/jobs/queue.ts";
 
 import { createTestDatabase } from "./_db.ts";
@@ -185,7 +185,7 @@ describe("runQuery", () => {
   });
 
   it("records each query in the task's log instead of logging its cost", async () => {
-    const taskLog: TaskLog = { fields: {}, requests: [], written: false };
+    const taskLog = createTaskLog();
     const session = { ...(await leasedSession()), taskLog };
 
     await runQuery(
