@@ -341,7 +341,7 @@ describe("runDeliver: comments", () => {
     expect(await job(id)).toBeUndefined();
   });
 
-  it("renders and posts a digest, then finishes it", async () => {
+  it("renders and posts a digest, then finishes it with an empty successor", async () => {
     const user = await signUp("alice", "grn-inbox/inbox#7");
     await db.query(
       `INSERT INTO content (node_id, type, repo_full_name, url, title)
@@ -368,7 +368,9 @@ describe("runDeliver: comments", () => {
     expect(body).toContain("1 new ❤️ on your issue [Bug \\@\u200Bhere]");
     expect(body).toContain("[@\u200Bbob](https://github.com/bob)");
     expect(body).toContain(`<!-- grn:${lease.id} -->`);
-    expect(await jobKinds(user)).toEqual(["sync"]);
+    // the posted digest is gone; its empty successor holds the batching window
+    expect(await job(lease.id)).toBeUndefined();
+    expect(await jobKinds(user)).toEqual(["deliver", "sync"]);
     const { rows } = await db.query<{ outcome: string }>(
       "SELECT outcome FROM reaction_notifications",
     );

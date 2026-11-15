@@ -11,6 +11,7 @@ import {
   vi,
 } from "vitest";
 
+import { defaultConfig } from "../src/config.ts";
 import type { Database } from "../src/db.ts";
 import { deleteAccount, loadToken, signIn } from "../src/users/accounts.ts";
 import type { GitHubIdentity } from "../src/users/accounts.ts";
@@ -126,10 +127,11 @@ describe("signIn", () => {
        FROM subscription_types t JOIN subscription_categories c ON c.id = t.category_id
        ORDER BY 1`,
     );
+    const margin = defaultConfig.clockMarginSeconds;
     expect(types).toEqual([
-      { content_type: "Issue", behind: 180 },
-      { content_type: "IssueComment", behind: 180 },
-      { content_type: "PullRequest", behind: 180 },
+      { content_type: "Issue", behind: margin },
+      { content_type: "IssueComment", behind: margin },
+      { content_type: "PullRequest", behind: margin },
     ]);
 
     const { rows: passes } = await db.query<{ pass: string; behind: number }>(
@@ -138,10 +140,11 @@ describe("signIn", () => {
        FROM subscription_passes p JOIN subscription_categories c ON c.id = p.category_id
        ORDER BY 1`,
     );
+    const overlap = defaultConfig.searchOverlapSeconds;
     expect(passes).toEqual([
-      { pass: "Issue", behind: 3600 },
-      { pass: "IssueComment", behind: 3600 },
-      { pass: "PullRequest", behind: 3600 },
+      { pass: "Issue", behind: overlap },
+      { pass: "IssueComment", behind: overlap },
+      { pass: "PullRequest", behind: overlap },
     ]);
 
     const { rows: windows } = await db.query<{ starts_at_signup: boolean }>(

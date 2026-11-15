@@ -375,7 +375,7 @@ describe("signIn: turning notifications off (M1.2 §5)", () => {
        VALUES ($1, $2, 'R_1', 'HEART', 'delivered'), ($1, $2, 'R_2', 'HEART', 'queued')`,
       [userId, `I_${userId}`],
     );
-    await openDigests(db, [userId], defaultConfig);
+    await openDigests(db, [userId]);
   };
 
   it.each(["open", "rendered"])(

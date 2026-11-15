@@ -333,18 +333,21 @@ describe("runPoll", () => {
   it("stores no reaction from before enabled_at", async () => {
     const session = await setUp();
     await track("I_1");
+    // enabled_at is CLOCK_MARGIN ago
+    const margin = defaultConfig.clockMarginSeconds;
+    const newest = ago(margin / 3);
     const drillDown = drilling([
       page([
-        reaction(ago(60), bob),
-        reaction(ago(120), carol, "HEART"),
-        // before enabled_at (3 minutes ago)
-        reaction(ago(600), dave),
-        reaction(ago(3600), carol),
+        reaction(newest, bob),
+        reaction(ago((2 * margin) / 3), carol, "HEART"),
+        // before enabled_at
+        reaction(ago(2 * margin), dave),
+        reaction(ago(20 * margin), carol),
       ]),
     ]);
 
     const result = await runPoll(session, {
-      probe: probing([newestAt(ago(60))]),
+      probe: probing([newestAt(newest)]),
       drillDown,
     });
 
@@ -356,7 +359,7 @@ describe("runPoll", () => {
       expect.objectContaining({ reactor: "carol", emoji: "HEART" }),
     ]);
     const row = await item("I_1");
-    expect(row.last_event_at).toEqual(new Date(ago(60)));
+    expect(row.last_event_at).toEqual(new Date(newest));
     expect(row.checked_ago).toBeLessThan(5);
     expect(await syncJob()).toMatchObject({ locked_by: null });
   });
@@ -385,8 +388,9 @@ describe("runPoll", () => {
        FROM jobs WHERE kind = 'deliver' AND payload->>'digest' = 'true'`,
     );
     expect(digests).toHaveLength(1);
-    expect(digests[0]?.due_in).toBeGreaterThan(170);
-    expect(digests[0]?.due_in).toBeLessThanOrEqual(180);
+    // the first reaction after a quiet window goes out at once (FR-10)
+    expect(digests[0]?.due_in).toBeGreaterThan(-5);
+    expect(digests[0]?.due_in).toBeLessThanOrEqual(0);
     expect(logger.log).toHaveBeenCalledWith(
       "poll",
       expect.objectContaining({ newReactions: 2, queued: 2 }),

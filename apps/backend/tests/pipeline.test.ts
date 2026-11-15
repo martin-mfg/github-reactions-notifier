@@ -11,6 +11,7 @@ import {
   vi,
 } from "vitest";
 
+import { defaultConfig } from "../src/config.ts";
 import { withTransaction } from "../src/db.ts";
 import type { Database } from "../src/db.ts";
 import type { ContentType } from "../src/discovery/store.ts";
@@ -27,6 +28,9 @@ import type { TestDatabase } from "./_db.ts";
 
 let testDb: TestDatabase;
 let db: Database;
+
+/** FR-10's batching window: a successor is due this long after its predecessor's `run_at`. */
+const windowMs = defaultConfig.digestWindowSeconds * 1000;
 
 beforeAll(async () => {
   testDb = await createTestDatabase();
@@ -224,7 +228,7 @@ const stranded = async () => {
 };
 
 describe("fanOut", () => {
-  it("queues a reaction for every user with a source and opens their digests", async () => {
+  it("queues a reaction for every user with a source and opens their digests, due at once", async () => {
     await signUp("alice");
     await signUp("bob");
     await signUp("carol");
@@ -252,8 +256,8 @@ describe("fanOut", () => {
       ["U_bob", "open"],
     ]);
     for (const row of open) {
-      expect(row.due_in).toBeGreaterThan(175);
-      expect(row.due_in).toBeLessThanOrEqual(180);
+      expect(row.due_in).toBeGreaterThan(-5);
+      expect(row.due_in).toBeLessThanOrEqual(0);
     }
   });
 
@@ -385,7 +389,7 @@ describe("fanOut", () => {
 });
 
 describe("renderDigest and finishDigest", () => {
-  it("renders all queued reactions, oldest first, and finishes without a successor", async () => {
+  it("renders all queued reactions, oldest first, and finishes with an empty successor holding the window", async () => {
     await signUp("alice");
     await source("I_1", ["U_alice"]);
     await queue([
@@ -414,8 +418,12 @@ describe("renderDigest and finishDigest", () => {
       }),
     );
 
-    expect(await finish(lease)).toBe(false);
-    expect(await digests()).toEqual([]);
+    await finish(lease);
+    const [successor] = await digests();
+    expect(successor).toMatchObject({ user_id: "U_alice", state: "open" });
+    expect(successor?.run_at).toEqual(
+      new Date(lease.runAt.getTime() + windowMs),
+    );
   });
 
   it("re-renders a retry as the same body, without the reactions queued since", async () => {
@@ -435,20 +443,24 @@ describe("renderDigest and finishDigest", () => {
     ]);
   });
 
-  it("finishes a digest with nothing queued, without a post", async () => {
+  it("ends a quiet window: the empty successor finishes without a post or a successor", async () => {
     await signUp("alice");
     await source("I_1", ["U_alice"]);
     await queue([await react("I_1", "bob")]);
-    // as if delivered by an earlier digest
-    await db.query("UPDATE reaction_notifications SET outcome = 'delivered'");
-    const lease = await claim();
+    const first = await claim();
+    await render(first);
+    await finish(first);
+    const successor = await claim();
 
-    expect(await render(lease)).toBeNull();
-    expect(logger.warn).toHaveBeenCalledWith(
-      "digest: nothing queued, finished without a post",
-      expect.objectContaining({ job: lease.id }),
-    );
+    expect(await render(successor)).toBeNull();
     expect(await digests()).toEqual([]);
+    expect(logger.warn).not.toHaveBeenCalled();
+
+    // the next reaction goes out at once again
+    await queue([await react("I_1", "carol")]);
+    const [next] = await digests();
+    expect(next).toMatchObject({ state: "open" });
+    expect(next?.due_in).toBeLessThanOrEqual(0);
   });
 
   it("throws LeaseLostError and changes nothing if the lease was lost", async () => {
@@ -483,12 +495,12 @@ describe("a reaction queued while a digest is sent", () => {
     expect(await render(lease)).toEqual({
       body: "bob THUMBS_UP\ncarol THUMBS_UP",
     });
-    expect(await finish(lease)).toBe(false);
+    await finish(lease);
     expect(await stranded()).toEqual([]);
-    expect(await digests()).toEqual([]);
+    expect(await drain()).toEqual([]);
   });
 
-  it("waits for a successor due 3 minutes after the predecessor's run_at if queued after rendering", async () => {
+  it("waits for a successor due one window after the predecessor's run_at if queued after rendering", async () => {
     await signUp("alice");
     await source("I_1", ["U_alice"]);
     await queue([await react("I_1", "bob")]);
@@ -500,18 +512,18 @@ describe("a reaction queued while a digest is sent", () => {
     expect(await digests()).toEqual([
       expect.objectContaining({ state: "rendered", run_at: lease.runAt }),
     ]);
-    expect(await finish(lease)).toBe(true);
+    await finish(lease);
 
     const [successor] = await digests();
     expect(successor).toMatchObject({ user_id: "U_alice", state: "open" });
     expect(successor?.run_at).toEqual(
-      new Date(lease.runAt.getTime() + 180_000),
+      new Date(lease.runAt.getTime() + windowMs),
     );
     expect(await stranded()).toEqual([]);
     expect(await drain()).toEqual(["carol THUMBS_UP"]);
   });
 
-  it("opens a new digest, due in 3 minutes, if queued after finishing", async () => {
+  it("joins the successor, due one window after the predecessor's run_at, if queued after finishing", async () => {
     await signUp("alice");
     await source("I_1", ["U_alice"]);
     await queue([await react("I_1", "bob")]);
@@ -521,10 +533,12 @@ describe("a reaction queued while a digest is sent", () => {
 
     await queue([await react("I_1", "carol")]);
 
-    const [next] = await digests();
-    expect(next).toMatchObject({ state: "open" });
-    expect(next?.due_in).toBeGreaterThan(175);
+    const next = await digests();
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({ state: "open" });
+    expect(next[0]?.run_at).toEqual(new Date(lease.runAt.getTime() + windowMs));
     expect(await stranded()).toEqual([]);
+    expect(await drain()).toEqual(["carol THUMBS_UP"]);
   });
 
   it.each([

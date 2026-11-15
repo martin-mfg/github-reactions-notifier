@@ -62,8 +62,8 @@ export interface Config {
   /** A snapshot row whose read failed is not picked again for this long (M1.1 §4.2). */
   snapshotRetryDelaySeconds: number;
   /**
-   * FR-10's batching window: a digest is due this long after it opens, and its successor this
-   * long after its own `run_at` (§10).
+   * FR-10's batching window: a digest opens due at once, and its successor, which collects the
+   * reactions queued meanwhile, is due this long after the posted digest's `run_at` (§10).
    */
   digestWindowSeconds: number;
   /** How many worker loops each cron run starts (§7.1). */
@@ -89,7 +89,7 @@ export interface Config {
 }
 
 export const defaultConfig: Config = {
-  clockMarginSeconds: 3 * 60,
+  clockMarginSeconds: 2 * 60,
   budgetTarget: 0.8,
   budgetReserve: 500,
   dispatchRatePerHour: 480,
@@ -100,7 +100,7 @@ export const defaultConfig: Config = {
   leaseReapAgeSeconds: 15 * 60,
   reaperBackoffBaseSeconds: 60,
   reaperMaxExponent: 8,
-  reaperAlertAttempts: 3,
+  reaperAlertAttempts: 1,
   searchOverlapSeconds: 60 * 60,
   requestTimeoutSeconds: 2 * 60,
   costAlarm: 3,
@@ -109,14 +109,14 @@ export const defaultConfig: Config = {
   minRecheckSeconds: 4 * 60,
   discoveryMinRecheckSeconds: 4 * 60,
   scoreExponent: 0.8,
-  discoveryWeight: 2,
+  discoveryWeight: 4,
   probeBatch: 50,
   snapshotBatch: 50,
   snapshotRetryDelaySeconds: 60 * 60,
-  digestWindowSeconds: 3 * 60,
+  digestWindowSeconds: 5 * 60,
   workersPerCron: 1,
-  deliverWaitSeconds: 15,
+  deliverWaitSeconds: 10,
   maxDurationSeconds: 790,
-  clockOffsetAlarmSeconds: 2,
-  clockCheckIntervalSeconds: 60,
+  clockOffsetAlarmSeconds: 1,
+  clockCheckIntervalSeconds: 120,
 };

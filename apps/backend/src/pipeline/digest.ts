@@ -44,76 +44,83 @@ export type DigestRenderer = (
 type DigestLease = Pick<Lease, "id" | "lockedBy">;
 
 /**
- * Opens each user's digest, or locks it if one exists (§10). Runs in the same transaction as
- * the inserts of the users' `queued` rows. An existing digest, open or rendered, keeps its
- * `run_at`: later reactions join an open digest without delaying it, and wait in `queued` for
- * a rendered one's successor. The lock makes rendering or finishing that digest wait for this
- * transaction, so neither misses the `queued` rows.
+ * Opens each user's digest, due at once, or locks it if one exists (§10). Runs in the same
+ * transaction as the inserts of the users' `queued` rows. An existing digest, open or
+ * rendered, keeps its `run_at`: later reactions join an open digest without moving it,
+ * including the empty successor a posted digest leaves for its window (see
+ * {@link finishDigest}), and wait in `queued` for a rendered one's successor. The lock makes
+ * rendering or finishing that digest wait for this transaction, so neither misses the
+ * `queued` rows.
+ *
+ * So the first reaction after a quiet window goes out at once, and the ones following it within
+ * `digestWindowSeconds` are batched into one more digest.
  *
  * @param client Client inside the transaction that queued the users' notifications.
  * @param userIds The users with newly queued notifications.
- * @param config Tunable `digestWindowSeconds`.
  */
 export const openDigests = async (
   client: Queryable,
   userIds: Array<string>,
-  config: Config = defaultConfig,
 ): Promise<void> => {
   // one statement per user, in a fixed order, so concurrent fan-outs can't deadlock
   for (const userId of [...new Set(userIds)].sort()) {
     await client.query(
       `INSERT INTO jobs (kind, user_id, payload, run_at)
-       VALUES ('deliver', $1, $2::jsonb, now() + make_interval(secs => $3::double precision))
+       VALUES ('deliver', $1, $2::jsonb, now())
        ON CONFLICT (user_id) WHERE kind = 'deliver' AND payload->>'digest' = 'true'
        DO UPDATE SET run_at = jobs.run_at`,
-      [userId, OPEN_DIGEST, config.digestWindowSeconds],
+      [userId, OPEN_DIGEST],
     );
   }
 };
 
 /**
- * Deletes the posted digest and, if its user has `queued` notifications, opens its successor,
- * due `digestWindowSeconds` after the posted digest's `run_at` (§10).
+ * Deletes the leased digest, fenced by its lease.
  *
- * Unlike §10's single statement, the successor's check is a statement of its own. One
- * statement reads with one snapshot: if it is the transaction's first to wait for a fan-out
- * that locked the digest, its snapshot predates that fan-out's `queued` rows and no successor
- * opens for them. `withLease`'s renewal takes the lock first anyway; the split keeps this
- * correct without it.
+ * @param client Client inside the job's last, fenced transaction.
+ * @param lease The digest's lease.
+ * @returns The deleted digest's user and `run_at`.
+ * @throws {LeaseLostError} If the lease was lost.
+ */
+const deleteDigest = async (
+  client: Queryable,
+  lease: DigestLease,
+): Promise<{ user_id: string; run_at: Date }> => {
+  const { rows } = await client.query<{ user_id: string; run_at: Date }>(
+    "DELETE FROM jobs WHERE id = $1 AND locked_by = $2 RETURNING user_id, run_at",
+    [lease.id, lease.lockedBy],
+  );
+  const digest = rows[0];
+  if (!digest) {
+    throw new LeaseLostError(lease);
+  }
+  return digest;
+};
+
+/**
+ * Deletes the posted digest and opens its successor, due `digestWindowSeconds` after the
+ * posted digest's `run_at` (§10). The successor opens even with nothing `queued`: it holds
+ * the window, so reactions queued within it join the successor instead of opening a digest
+ * due at once. If nothing joins, it finishes without a post when it falls due
+ * ({@link renderDigest}), and the next reaction opens a digest due at once again.
  *
  * @param client Client inside the job's last, fenced transaction.
  * @param lease The digest's lease.
  * @param config Tunable `digestWindowSeconds`.
- * @returns Whether a successor was opened.
  * @throws {LeaseLostError} If the lease was lost.
  */
 export const finishDigest = async (
   client: Queryable,
   lease: DigestLease,
   config: Config = defaultConfig,
-): Promise<boolean> => {
-  const { rows: deleted } = await client.query<{
-    user_id: string;
-    run_at: Date;
-  }>(
-    "DELETE FROM jobs WHERE id = $1 AND locked_by = $2 RETURNING user_id, run_at",
-    [lease.id, lease.lockedBy],
-  );
-  const digest = deleted[0];
-  if (!digest) {
-    throw new LeaseLostError(lease);
-  }
-  const { rows } = await client.query(
+): Promise<void> => {
+  const digest = await deleteDigest(client, lease);
+  await client.query(
     `INSERT INTO jobs (kind, user_id, payload, run_at)
-     SELECT 'deliver', $1, $2::jsonb,
-            $3::timestamptz + make_interval(secs => $4::double precision)
-     WHERE EXISTS (
-       SELECT 1 FROM reaction_notifications WHERE user_id = $1 AND outcome = 'queued'
-     )
-     RETURNING id`,
+     VALUES ('deliver', $1, $2::jsonb,
+             $3::timestamptz + make_interval(secs => $4::double precision))`,
     [digest.user_id, OPEN_DIGEST, digest.run_at, config.digestWindowSeconds],
   );
-  return rows.length === 1;
 };
 
 /**
@@ -122,7 +129,8 @@ export const finishDigest = async (
  * before keeps its body, so a retry re-posts the same comment. Logs the batch's wait, from
  * `run_at` to rendering (§12).
  *
- * A digest with nothing queued is finished instead, without a post.
+ * A digest with nothing queued is deleted instead, without a post and without a successor:
+ * the normal end of the window a posted digest's successor holds ({@link finishDigest}).
  *
  * Each statement reads afresh (READ COMMITTED) after the first one has locked the job: a
  * fan-out that locked the digest first has committed its `queued` rows by then.
@@ -130,7 +138,6 @@ export const finishDigest = async (
  * @param client Client inside the job's fenced transaction.
  * @param lease The digest's lease.
  * @param render Renders the body.
- * @param config Tunable `digestWindowSeconds`, for finishing an empty digest.
  * @returns The body to post, or `null` if there is nothing to post.
  * @throws {LeaseLostError} If the lease was lost.
  */
@@ -138,7 +145,6 @@ export const renderDigest = async (
   client: Queryable,
   lease: DigestLease,
   render: DigestRenderer,
-  config: Config = defaultConfig,
 ): Promise<{ body: string } | null> => {
   const { rows: jobs } = await client.query<{
     user_id: string;
@@ -182,12 +188,12 @@ export const renderDigest = async (
      ORDER BY e.reacted_at, n.node_id, n.emoji, n.reactor_id`,
     [job.user_id],
   );
-  const context = { job: lease.id, user: job.user_id, kind: "deliver" };
   if (rows.length === 0) {
-    logger.warn("digest: nothing queued, finished without a post", context);
-    await finishDigest(client, lease, config);
+    // the successor of a posted digest whose window passed quietly: no post, no successor
+    await deleteDigest(client, lease);
     return null;
   }
+  const context = { job: lease.id, user: job.user_id, kind: "deliver" };
 
   const body = render(
     rows.map((row) => ({

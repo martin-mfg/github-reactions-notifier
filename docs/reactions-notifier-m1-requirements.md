@@ -31,7 +31,7 @@ The source of numeric defaults is `apps/backend/src/config.ts`, not earlier desi
 | Policy | Implemented M1 behavior |
 |---|---|
 | Minimum polling and discovery delay | Both 4 min |
-| Clock margin | 3 min; `D > CLOCK_MARGIN` |
+| Clock margin | 2 min; `D > CLOCK_MARGIN` |
 | Search overlap | 1 hour placeholder, pending M0 calibration |
 | Self and bot reactions | Included; no self/bot filter is implemented |
 | Null reactor | Stored and notified as `ghost`, with synthetic identity `ghost:<createdAt>` (canonical ISO timestamp) |
@@ -175,8 +175,9 @@ right:
 - **FR-9** The GitHub-native inbox (§11) is the **only** channel.
 - **FR-9a** Delivery is serialised, paced, retried (§12), and **idempotent**. An ambiguous
   failure must never produce a duplicate comment.
-- **FR-10** Near-instant only: batch each user's reactions over **3 min**. Under load, the
-  batches simply grow larger and arrive further apart.
+- **FR-10** Near-instant only: the first reaction after a quiet window goes out **at once**;
+  the reactions following it within **5 min** are batched into one more digest. A burst thus
+  costs two notifications. Under load, the batches simply grow larger and arrive further apart.
 - **FR-12** Fixed policy, not stored settings: include the **user's own** reactions. This is only for testing and might be changed in a later version.
   Bot reactions are also included; there is no bot filter in M1.
 - **FR-15** Digests group by content item, then by emoji: "5 new 👍 and 2 🎉 on *item*". In M1
@@ -358,7 +359,7 @@ least 1 s has passed since `level_at` (§12). Until a user's inbox issue exists 
 ### 7.4 Two clocks (§6.2)
 - All of GRN's timestamps come from Postgres `now()`. GitHub's `createdAt` and
   `x-ratelimit-reset` come from GitHub's clock, in whole seconds.
-- **`CLOCK_MARGIN = 3 min`** is applied wherever the two clocks meet, always erring toward
+- **`CLOCK_MARGIN = 2 min`** is applied wherever the two clocks meet, always erring toward
   re-reading or waiting longer:
   - `enabled_at = now − CLOCK_MARGIN`.
   - The poll watermark is at most `probe start − CLOCK_MARGIN`.
@@ -415,7 +416,7 @@ score = (wait / content_age^P) × value_weight         P = 0.8
   ~50 due items.
 - `P < 1` makes every score grow without bound, so nothing starves. No other deadline
   mechanism is needed.
-- Defaults pending M0: `w = 2`; `D_discovery` = max(search lag, D).
+- Defaults pending M0: `w = 4`; `D_discovery` = max(search lag, D).
 
 ### 9.2 Discovery: `authored`, category `issue` (§6.3 Task kind A)
 
@@ -590,7 +591,7 @@ CREATE UNIQUE INDEX ON jobs (user_id) WHERE kind = 'deliver' AND payload->>'dige
 
 -- with every insert of a 'queued' row (same transaction):
 INSERT INTO jobs (kind, user_id, payload, run_at)
-VALUES ('deliver', $user, '{"digest": true, "state": "open"}', now() + interval '3 minutes')
+VALUES ('deliver', $user, '{"digest": true, "state": "open"}', now())
   ON CONFLICT (user_id) WHERE kind = 'deliver' AND payload->>'digest' = 'true'
   DO UPDATE SET run_at = jobs.run_at;   -- changes nothing, but locks the digest
 
@@ -598,17 +599,23 @@ VALUES ('deliver', $user, '{"digest": true, "state": "open"}', now() + interval 
 UPDATE jobs SET payload = payload || '{"state": "rendered"}' WHERE id = $job;
 UPDATE reaction_notifications SET outcome = 'delivered'
 WHERE user_id = $user AND outcome = 'queued' RETURNING *;   -- render into payload.body, COMMIT
+-- nothing returned: DELETE FROM jobs WHERE id = $job, no post and no successor
 
 -- finishing: the same transaction that deletes the posted digest
 WITH d AS (DELETE FROM jobs WHERE id = $job RETURNING run_at)
 INSERT INTO jobs (kind, user_id, payload, run_at)
-SELECT 'deliver', $user, '{"digest": true, "state": "open"}', d.run_at + interval '3 minutes'
-FROM d
-WHERE EXISTS (SELECT 1 FROM reaction_notifications WHERE user_id = $user AND outcome = 'queued');
+SELECT 'deliver', $user, '{"digest": true, "state": "open"}', d.run_at + interval '5 minutes'
+FROM d;
 ```
+- A digest opened without a predecessor is **due at once**: the first reaction after a quiet
+  window is not delayed.
 - Later reactions join an open digest **without moving `run_at`**.
 - While a digest is rendered, new reactions stay `queued` for its successor.
-- A successor is due 3 min after its predecessor's `run_at`.
+- A posted digest **always** opens a successor, due 5 min after its own `run_at`, even with
+  nothing `queued`. `[WHY]` The successor holds the window: reactions queued within it join
+  the successor instead of opening a digest due at once, so messages stay at least 5 min apart.
+- A successor that falls due with nothing `queued` is deleted without a post and opens no
+  successor, so the next reaction is due at once again.
 - A retry re-posts the **same body**. `[WHY]` A second digest beside a retrying one could
   overtake it.
 - A digest that fails permanently deletes all of the user's jobs (§12). No successor opens.
@@ -800,14 +807,14 @@ For a returning user, the sign-in instead updates the token and login, sets
 | `D` | 4 min | Minimum re-check delay per item |
 | `D_discovery` | 4 min | Placeholder pending search-lag calibration; intended eventual value is max(search lag, D) |
 | `P` | 0.8 | Score exponent |
-| `w` | 2 | Discovery/backfill weight. No principled default; calibrate in M0. |
+| `w` | 4 | Discovery/backfill weight. No principled default; calibrate in M0. Raised from 2 so the backfill summary arrives sooner, at the cost of slower polling during backfill. |
 | `TARGET` | 0.8 | Budget ramp |
 | `RESERVE` | ~500 points | Hard floor |
-| `CLOCK_MARGIN` | 3 min | can hopefully be lowered after observing real timings |
+| `CLOCK_MARGIN` | 2 min | can hopefully be lowered further after observing real timings |
 | Probe batch | ~50 items | Drill-down ≤ 100 items, `first: 100` reactions each |
 | Discovery page | 100 per pass | One page per run; no cursors |
 | Thread scan batch | ~50 threads | |
-| Digest batching window | 3 min | |
+| Digest batching window | 5 min | The first reaction after a quiet window goes out at once (FR-10) |
 | Dispatch rate | 480/h | Bucket refill rate |
 | Dispatch bucket capacity | 10 tokens | Largest burst of writes |
 | Request timeout | 2 min | Shorten after observing real response times |
@@ -1072,8 +1079,8 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
 8. **Pipeline and digest:** fan-out (the `enabled_at` test; FR-12 keeps the user's own
    reactions), `reaction_notifications`, and the digest SQL.
    *Accept:* tests show no reaction is stranded when it is queued concurrently with rendering
-   or finishing a digest, a successor is due 3 min after its predecessor's `run_at`, and there
-   are no duplicates (FR-7).
+   or finishing a digest, a new digest is due at once, a successor is due 5 min after its
+   predecessor's `run_at`, and there are no duplicates (FR-7).
    *Status:* done. Fan-out is `fanOut` in `apps/backend/src/pipeline/fanOut.ts`; the digest
    SQL is `openDigests`, `renderDigest` and `finishDigest` in
    `apps/backend/src/pipeline/digest.ts`. §14's batching window is `digestWindowSeconds`.
@@ -1085,19 +1092,20 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
      and logs how many notifications it `queued`.
    - Digests are opened (or locked) one statement per user, in sorted user order, so
      concurrent fan-outs can't deadlock.
-   - Finishing is two statements, not §10's one: the delete, then the successor's insert with
-     its `EXISTS` check. A single statement that is the transaction's first to wait for a
-     fan-out holding the digest's lock reads with a snapshot from before that fan-out
-     committed, and strands its reactions; this was reproduced on a real Postgres. Rendering
-     likewise starts with `SELECT … FOR UPDATE` on the job. `withLease`'s renewal takes the
-     lock first anyway; the split keeps both correct on their own. The PGlite tests run
-     transactions one after the other, so they cover every ordering; the lock waits between
-     them were checked once against a real Postgres.
+   - Finishing is two statements, not §10's one: the delete, then the successor's insert.
+     (While the insert still checked for `queued` rows, a single statement that is the
+     transaction's first to wait for a fan-out holding the digest's lock read with a snapshot
+     from before that fan-out committed, and stranded its reactions; this was reproduced on a
+     real Postgres. The successor now opens unconditionally.) Rendering starts with
+     `SELECT … FOR UPDATE` on the job. `withLease`'s renewal takes the lock first anyway. The
+     PGlite tests run transactions one after the other, so they cover every ordering; the
+     lock waits between them were checked once against a real Postgres.
    - Rendering takes a renderer callback; the body's format, FR-15 grouping and sanitising
      are step 9. A digest rendered before returns its stored body. The batch's wait (now −
      `run_at`) is logged at rendering.
-   - A digest that finds nothing `queued` when rendered is finished without a post (with a
-     warning), and opens no successor.
+   - A digest that finds nothing `queued` when rendered is deleted without a post, and opens
+     no successor. Since FR-10's leading-edge delivery, this is the normal end of a quiet
+     window, so it logs nothing beyond the worker's `job finished` (`skipped`).
    - No dispatcher calls rendering or finishing yet; that is steps 9 and 10.
 9. **Dispatcher and inbox:** opening, rendering rules and FR-15 grouping, token bucket, the
    retry table, permanent failures, and the idempotency marker.

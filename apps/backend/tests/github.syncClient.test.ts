@@ -513,7 +513,10 @@ describe("settleSyncFailure", () => {
       resetAt,
     });
 
-    expect((await syncJob())?.due_in).toBeCloseTo(20 * 60 + 180, 0);
+    expect((await syncJob())?.due_in).toBeCloseTo(
+      20 * 60 + defaultConfig.clockMarginSeconds,
+      0,
+    );
   });
 
   it("revokes the token on a 401 and queues FR-17's notice", async () => {

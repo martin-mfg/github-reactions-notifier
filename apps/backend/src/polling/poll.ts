@@ -344,7 +344,7 @@ export const runPoll = async (
         outcomes.map((outcome) => outcome.watermarkTo),
       ],
     );
-    const queued = await fanOut(client, rows, config);
+    const queued = await fanOut(client, rows);
     await releaseSync(client, lease);
     return { newReactions: rows, queued, detectedAt };
   });

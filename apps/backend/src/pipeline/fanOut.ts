@@ -1,5 +1,3 @@
-import { defaultConfig } from "../config.ts";
-import type { Config } from "../config.ts";
 import type { Queryable } from "../db.ts";
 
 import { openDigests } from "./digest.ts";
@@ -27,13 +25,11 @@ export interface NewReaction {
  *
  * @param client Client inside the producer's transaction.
  * @param reactions The new reactions.
- * @param config Tunable `digestWindowSeconds`.
  * @returns How many notifications were queued.
  */
 export const fanOut = async (
   client: Queryable,
   reactions: Array<NewReaction>,
-  config: Config = defaultConfig,
 ): Promise<number> => {
   if (reactions.length === 0) {
     return 0;
@@ -61,7 +57,6 @@ export const fanOut = async (
   await openDigests(
     client,
     rows.map((row) => row.user_id),
-    config,
   );
   return rows.length;
 };

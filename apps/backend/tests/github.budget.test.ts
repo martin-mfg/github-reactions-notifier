@@ -68,8 +68,9 @@ describe("budgetHasRoom", () => {
   });
 
   it("keeps the spent window until CLOCK_MARGIN after its reset", () => {
-    expect(budgetHasRoom(state(5000, -180), now)).toBe(false);
-    expect(budgetHasRoom(state(5000, -181), now)).toBe(true);
+    const margin = defaultConfig.clockMarginSeconds;
+    expect(budgetHasRoom(state(5000, -margin), now)).toBe(false);
+    expect(budgetHasRoom(state(5000, -margin - 1), now)).toBe(true);
   });
 
   it("treats a rolled-over window as unused", () => {

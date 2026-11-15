@@ -334,12 +334,14 @@ describe("claiming sync jobs", () => {
     });
 
     it("treats the window as rolled over after reset_at + CLOCK_MARGIN", async () => {
-      await setRateLimit("U_a", 5000, "-4 minutes");
+      const pastMargin = defaultConfig.clockMarginSeconds + 60;
+      await setRateLimit("U_a", 5000, `-${pastMargin} seconds`);
       expect(await claim("sync")).not.toBeNull();
     });
 
     it("waits out CLOCK_MARGIN after reset_at", async () => {
-      await setRateLimit("U_a", 5000, "-2 minutes");
+      const withinMargin = defaultConfig.clockMarginSeconds / 2;
+      await setRateLimit("U_a", 5000, `-${withinMargin} seconds`);
       expect(await claim("sync")).toBeNull();
     });
   });
@@ -429,7 +431,7 @@ describe("reaper", () => {
     await insertUser("U_b");
   });
 
-  it("frees only leases not renewed for 15 minutes, behind a backoff", async () => {
+  it("frees only leases not renewed for 15 minutes, behind a backoff, warning below the alert threshold", async () => {
     const expired = await insertJob("sync", "U_a");
     const fresh = await insertJob("sync", "U_b");
     const idle = await insertJob("deliver", "U_b", "-1 minute", { body: "x" });
@@ -441,7 +443,11 @@ describe("reaper", () => {
     );
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
 
-    const rescued = await reapExpiredLeases(db);
+    // a threshold above the job's 1 attempt, so the rescue only warns
+    const rescued = await reapExpiredLeases(db, {
+      ...defaultConfig,
+      reaperAlertAttempts: 2,
+    });
 
     expect(rescued).toStrictEqual([
       { id: expired, kind: "sync", userId: "U_a", attempts: 1 },

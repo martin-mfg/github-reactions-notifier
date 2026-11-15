@@ -264,9 +264,10 @@ describe("chooseSyncTask: the snapshot sweep (M1.1 §4.1)", () => {
       kind: "snapshot",
       subscriptionId: await subscriptionId(),
     });
-    // wait 3600 s / (60 s)^0.8 × w
+    // wait 3600 s / (60 s)^P × w
     expect(task.kind === "snapshot" && task.score).toBeCloseTo(
-      (3600 / 60 ** 0.8) * 2,
+      (3600 / 60 ** defaultConfig.scoreExponent) *
+        defaultConfig.discoveryWeight,
       0,
     );
   });

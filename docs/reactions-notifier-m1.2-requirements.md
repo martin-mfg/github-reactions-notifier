@@ -36,7 +36,7 @@ posted.
 
 Everything else in M1 and M1.1 still holds, notably FR-6: no reaction older than the current
 `enabled_at` is ever notified individually. As at signup, turning notifications on sets that
-cutoff to `now − CLOCK_MARGIN`; reactions from the final three minutes of a pause may therefore
+cutoff to `now − CLOCK_MARGIN`; reactions from the final two minutes of a pause may therefore
 be notified if first discovered after resuming (§6, step 2).
 
 ## 1. Out of scope
@@ -185,8 +185,8 @@ rescan**, which §6.1 reuses.
    - `[WHY]` Fan-out tests each reaction against the *current* `enabled_at` (`fanOut.ts`), and
      `discovery/store.ts` seeds new rows from it, so reactions older than that cutoff are never
      notified. The watermarks only save the drill-downs.
-   - **Accepted clock-margin overlap.** Retain signup's `CLOCK_MARGIN` (3 min) to accommodate
-     clock skew. Reactions from the final three minutes of summary mode may be notified if
+   - **Accepted clock-margin overlap.** Retain signup's `CLOCK_MARGIN` (2 min) to accommodate
+     clock skew. Reactions from the final two minutes of summary mode may be notified if
      first discovered after resuming. Strict exclusion of every reaction created during the
      pause is not required.
 3. **Restart the backfill.** Upsert the category's window as

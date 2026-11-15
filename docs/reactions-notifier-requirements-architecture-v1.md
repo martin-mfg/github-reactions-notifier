@@ -1835,10 +1835,14 @@ batched per user. A user's pending reactions are their `queued` rows in
 `reaction_notifications`, and a single **digest** — a `deliver` job (§6.5) — stands for them all:
 
 - **Opened by the first reaction.** Every transaction that inserts a `queued` row — the poll's
-  fan-out and the replay above — also opens the user's digest, due 3 min later, unless they
+  fan-out and the replay above — also opens the user's digest, due at once, unless they
   have one already, open or rendered. Later reactions join an open one without moving
-  `run_at`, so even a steady stream goes out within the window — as one message rather than
-  many. While it is rendered, they stay `queued` for its successor (below).
+  `run_at`. While it is rendered, they stay `queued` for its successor (below).
+- **Leading edge, then a window (M1).** A posted digest always opens a successor due 5 min
+  after its own `run_at`, even with nothing queued: it holds the window, so the reactions
+  following the first one are batched into one more message rather than many. A successor
+  that falls due with nothing queued is deleted without a post and opens none, so the next
+  reaction goes out at once again.
 - **Rendered when sent.** When the dispatcher reaches the job, one transaction closes it, marks
   the user's `queued` rows `delivered`, renders them into the job's payload and commits — all
   before the first attempt. A retry thus re-posts the same body under the same marker (§6.8),
@@ -1860,7 +1864,7 @@ CREATE UNIQUE INDEX ON jobs (user_id) WHERE kind = 'deliver' AND payload->>'dige
 
 -- with every insert of a 'queued' row:
 INSERT INTO jobs (kind, user_id, payload, run_at)
-VALUES ('deliver', $user, '{"digest": true, "state": "open"}', now() + interval '3 minutes')
+VALUES ('deliver', $user, '{"digest": true, "state": "open"}', now())
   ON CONFLICT (user_id) WHERE kind = 'deliver' AND payload->>'digest' = 'true'
   DO UPDATE SET run_at = jobs.run_at;           -- changes nothing, but locks the digest
 
@@ -1938,7 +1942,7 @@ each batch waits longer and carries more:
 
 | Users with pending reactions | Each user's messages arrive about every (at 500/h) |
 |---|---|
-| up to 25 | 3 min — the batching window (§6.6) |
+| up to 40 | 5 min — the batching window (§6.6) |
 | 1 000 | 2 h |
 | 10 000 | 20 h |
 

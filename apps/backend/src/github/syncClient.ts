@@ -34,7 +34,7 @@ export interface SyncSession {
 }
 
 /** One request a task sent, as its log line reports it. */
-export interface RequestLog {
+interface RequestLog {
   query?: string;
   durationMs: number;
   /** `rateLimit.cost`, if the response carried it. */

@@ -197,12 +197,7 @@ const prepare = async (
     );
   }
   if (payload.digest === true) {
-    const rendered = await renderDigest(
-      client,
-      lease,
-      renderDigestBody,
-      session.config,
-    );
+    const rendered = await renderDigest(client, lease, renderDigestBody);
     return rendered && { kind: "digest", body: rendered.body, target };
   }
   if (typeof payload.body !== "string") {
