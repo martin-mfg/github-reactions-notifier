@@ -24,7 +24,7 @@
 GitHub notifies you about comments, mentions and reviews, but never about reactions.
 When someone adds 👍, ❤️ or 🎉 to your issue, you only find out by accident. GitHub Reactions Notifier fills this gap. Sign up once, and you get a summary of all reactions you've received so far, plus a GitHub notification for every new one.
 
-**[Sign up here](https://github-reactions-notifier.vercel.app/)**
+<h3 align="center">👉<a href="https://github-reactions-notifier.vercel.app/">Sign up here</a></h3>
 
 ## How it works
 

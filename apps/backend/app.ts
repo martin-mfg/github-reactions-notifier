@@ -8,7 +8,7 @@ export const app = express();
 
 app.use(
   serveStatic(path.join(import.meta.dirname, "../frontend/build"), {
-    maxAge: 3600000,
+    maxAge: 600000,
   }),
 );
 
