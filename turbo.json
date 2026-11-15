@@ -6,6 +6,11 @@
       "dependsOn": ["^build"],
       "outputs": ["build/**"]
     },
+    "@grn/frontend#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["build/**"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/inbox-*.png"]
+    },
     "lint": {
       "dependsOn": ["^build"]
     },

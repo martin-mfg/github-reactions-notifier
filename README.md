@@ -1,19 +1,28 @@
 <div align="center">
   <img src="docs/icon.png" alt="GitHub Reactions Notifier Logo" width="96">
   <h1>GitHub Reactions Notifier</h1>
-  <p>Get a GitHub notification when someone reacts to your issues, PRs or comments.</p>
+  <p>Get a GitHub notification for new reactions to your issues, PRs or comments; and a summary of all past ones.</p>
+  <picture>
+    <source
+      srcset="docs/inbox-dark.png"
+      media="(prefers-color-scheme: dark)"
+    />
+    <!-- light mode -->
+    <img
+      src="docs/inbox-light.png"
+      width="400"
+      alt="Example inbox comment"
+    />
+  </picture>
 </div>
 
 > [!WARNING]
-> **This is a prototype (alpha).** It may have bugs, lose data, or be shut down at any time.
+> **This is a prototype (alpha).** It may have bugs or be shut down at any time.
 > I'm releasing it early to find out whether people want it.
 > [Your feedback](#feedback) decides whether it gets developed further.
 
 GitHub notifies you about comments, mentions and reviews, but never about reactions.
-When someone adds 👍, ❤️ or 🎉 to your issue, you only find out by accident.
-
-GitHub Reactions Notifier fills this gap. Sign up once, and you get a GitHub notification
-whenever someone reacts to your issues, pull requests or comments.
+When someone adds 👍, ❤️ or 🎉 to your issue, you only find out by accident. GitHub Reactions Notifier fills this gap. Sign up once, and you get a summary of all reactions you've received so far, plus a GitHub notification for every new one.
 
 **[Sign up here](https://github-reactions-notifier.vercel.app/)**
 
@@ -26,13 +35,8 @@ whenever someone reacts to your issues, pull requests or comments.
    has received so far: how many items it found, how many reactions they have, and the total
    per emoji.
 4. **New reactions are posted as comments** in your inbox, usually within a few minutes.
-   Several reactions are bundled into one comment, for example:
-
-   > - 2 new 👍 and 1 new 🎉 on your issue [Add dark mode](#how-it-works) in octo-org/octo-app
-   >   - 👍 @&#8203;alice and @&#8203;bob
-   >   - 🎉 @&#8203;carol
-
-The people named in your inbox are **not** mentioned or notified. Only you are.
+   Several reactions are bundled into one comment.
+   The people named in your inbox are **not** mentioned or notified. Only you are.
 
 ## What's included, and what isn't yet
 
@@ -57,8 +61,8 @@ Missing something you need? [Tell me](#feedback).
 - **Reactions from before you signed in are never notified one by one.** They only count
   towards the summary.
 - **Your own reactions to your posts are reported too**. This is especially useful for testing.
-- **The first scan takes time.** For most accounts it takes minutes to hours; for very active
-  accounts it can take days. New reactions are reported while it runs, so you may get
+- **The first scan takes time.** For most accounts it takes a few minutes; for very active
+  accounts it can take longer. New reactions are reported while it runs, so you may get
   notifications before the summary arrives.
 - **Older content is checked less often.** A reaction on something you posted yesterday shows
   up within minutes. One on something from years ago can take longer. Once an item gets a

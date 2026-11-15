@@ -20,19 +20,3 @@
   color: inherit;
   font-weight: 600;
 }
-
-/* A slightly crooked "alpha" sticker after the site title. */
-.site-title::after {
-  content: "alpha";
-  margin-inline-start: 0.5rem;
-  padding: 0.1rem 0.45rem;
-  border: 1px dashed #1f1f1f;
-  border-radius: 0.25rem;
-  background-color: #f5c400;
-  color: #1f1f1f;
-  font-size: var(--sl-text-xs);
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  transform: rotate(-4deg);
-}
