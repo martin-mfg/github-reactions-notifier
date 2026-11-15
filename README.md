@@ -38,6 +38,16 @@ When someone adds 👍, ❤️ or 🎉 to your issue, you only find out by accid
    Several reactions are bundled into one comment.
    The people named in your inbox are **not** mentioned or notified. Only you are.
 
+## Feedback
+
+This prototype exists to find out whether the app is worth building further.
+Please [start a discussion](https://github.com/martin-mfg/github-reactions-notifier/discussions) and
+tell me:
+
+- Do you find it useful? Would you keep using it?
+- What's missing for you?
+- Did anything go wrong?
+
 ## What's included, and what isn't yet
 
 | Included                                      | Not yet included                                                                                         |
@@ -93,16 +103,6 @@ API quota the same way.
 - In rare edge cases, some reactions may not be reported. For example: more than 100 new
   reactions on a single item between two checks.
 - If you rename a repository or edit a title, your inbox may keep showing the old name.
-
-## Feedback
-
-This prototype exists to find out whether the app is worth building further.
-Please [start a discussion](https://github.com/martin-mfg/github-reactions-notifier/discussions) and
-tell me:
-
-- Do you find it useful? Would you keep using it?
-- What's missing for you?
-- Did anything go wrong?
 
 ## Credits
 
