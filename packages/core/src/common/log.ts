@@ -25,13 +25,18 @@ const render = (args: Array<unknown>): string =>
 
 /**
  * Writes each call as one line, with OAuth tokens redacted. `warn` and `error` lines start
- * with {@link PROBLEM_KEYWORD}.
+ * with {@link PROBLEM_KEYWORD}. `debug` writes nothing. `[WHY]` Vercel caps the log lines of
+ * a request, so routine lines that say nothing new are kept out.
  */
 const logger: {
+  debug: (...args: Array<unknown>) => void;
   log: (...args: Array<unknown>) => void;
   warn: (...args: Array<unknown>) => void;
   error: (...args: Array<unknown>) => void;
 } = {
+  debug: () => {
+    // not written, see above
+  },
   log: (...args) => {
     console.log(render(args));
   },

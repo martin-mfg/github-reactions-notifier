@@ -119,7 +119,7 @@ const retryer = async <TData = unknown, TVariables = Record<string, unknown>>(
       if (!isRateLimited) {
         return response;
       }
-      logger.log(`${currentPAT.name} Failed due to rate limiting`);
+      logger.warn(`${currentPAT.name} Failed due to rate limiting`);
     } catch (err) {
       const e = err as { response?: FetcherResponse<TData> };
 
@@ -145,7 +145,7 @@ const retryer = async <TData = unknown, TVariables = Record<string, unknown>>(
         // HTTP error with a response → return it for caller-side handling
         return e.response;
       }
-      logger.log(`${currentPAT.name} Failed due to bad credentials`);
+      logger.warn(`${currentPAT.name} Failed due to bad credentials`);
     }
   }
 

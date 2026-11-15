@@ -6,7 +6,7 @@ import { loadConfigFromEnv, logger } from "../src/index.js";
 type Fetcher = Parameters<typeof retryer>[0];
 
 beforeAll(() => {
-  vi.spyOn(logger, "log").mockImplementation(() => undefined);
+  vi.spyOn(logger, "warn").mockImplementation(() => undefined);
 });
 
 const fetcher = vi.fn().mockResolvedValue({ data: "ok" });

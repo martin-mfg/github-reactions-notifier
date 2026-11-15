@@ -55,6 +55,8 @@ export interface TaskLog {
   /** Fields for the line whatever the task logs, such as its score. */
   fields: Record<string, unknown>;
   requests: Array<RequestLog>;
+  /** `debug` for a task that found nothing, so its line isn't written. */
+  level: "log" | "debug";
 }
 
 /** @returns An empty {@link TaskLog}, written as `sync task` unless the task logs its summary. */
@@ -63,6 +65,7 @@ export const createTaskLog = (): TaskLog => ({
   summary: {},
   fields: {},
   requests: [],
+  level: "log",
 });
 
 /**
@@ -71,19 +74,22 @@ export const createTaskLog = (): TaskLog => ({
  * @param session The leased `sync` job.
  * @param message The task's name, such as `poll`.
  * @param fields The task's context and result.
+ * @param level `debug` if the task found nothing.
  */
 export const logTask = (
   session: SyncSession,
   message: string,
   fields: Record<string, unknown>,
+  level: TaskLog["level"] = "log",
 ): void => {
   const { taskLog } = session;
   if (!taskLog) {
-    logger.log(message, fields);
+    logger[level](message, fields);
     return;
   }
   taskLog.message = message;
   taskLog.summary = fields;
+  taskLog.level = level;
 };
 
 /**
@@ -96,7 +102,7 @@ export const writeTaskLog = (
   taskLog: TaskLog,
   job: Record<string, unknown> = {},
 ): void => {
-  logger.log(taskLog.message, {
+  logger[taskLog.level](taskLog.message, {
     ...taskLog.summary,
     ...taskLog.fields,
     ...(taskLog.requests.length > 0 && { requests: taskLog.requests }),

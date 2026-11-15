@@ -305,6 +305,23 @@ describe("runPoll", () => {
     }
   });
 
+  it("logs a poll that found nothing at debug level only", async () => {
+    const session = await setUp();
+    await track("I_1");
+    const debug = vi.spyOn(logger, "debug");
+
+    await runPoll(session, {
+      probe: probing([newestAt(null)]),
+      drillDown: drilling([]),
+    });
+
+    expect(debug).toHaveBeenCalledWith(
+      "poll",
+      expect.objectContaining({ probed: 1, drilled: 0, newReactions: 0 }),
+    );
+    expect(logger.log).not.toHaveBeenCalledWith("poll", expect.anything());
+  });
+
   it.each(["probe", "drill-down"])(
     "retries an omitted %s alias without committing poll progress",
     async (query) => {

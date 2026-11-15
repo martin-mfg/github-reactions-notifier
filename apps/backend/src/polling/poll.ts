@@ -375,19 +375,29 @@ export const runPoll = async (
         (stored.detectedAt.getTime() - reaction.reacted_at.getTime()) / 1000,
     )
     .sort((a, b) => a - b);
-  logTask(session, "poll", {
-    ...context,
-    probed: items.length,
-    drilled: toDrill.length,
-    missing: missing.length,
-    newReactions: newReactions.length,
-    queued,
-    // FR-8: how long after GitHub's createdAt GRN found them
-    ...(latencies.length > 0 && {
-      latencyP50Seconds: quantile(latencies, 0.5),
-      latencyP95Seconds: quantile(latencies, 0.95),
-    }),
-  });
+  const foundNothing =
+    toDrill.length === 0 &&
+    missing.length === 0 &&
+    newReactions.length === 0 &&
+    queued === 0;
+  logTask(
+    session,
+    "poll",
+    {
+      ...context,
+      probed: items.length,
+      drilled: toDrill.length,
+      missing: missing.length,
+      newReactions: newReactions.length,
+      queued,
+      // FR-8: how long after GitHub's createdAt GRN found them
+      ...(latencies.length > 0 && {
+        latencyP50Seconds: quantile(latencies, 0.5),
+        latencyP95Seconds: quantile(latencies, 0.95),
+      }),
+    },
+    foundNothing ? "debug" : "log",
+  );
   return {
     ok: true,
     probed: items.length,
