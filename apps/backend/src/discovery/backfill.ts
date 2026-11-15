@@ -12,7 +12,7 @@ import type {
 
 import type { Queryable } from "../db.ts";
 import { validBackfill } from "../github/queryValidation.ts";
-import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
+import { logTask, runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
 import { finishSyncTask, queueSummaryIfComplete } from "../summary/summary.ts";
@@ -413,7 +413,7 @@ export const runBackfill = async (
       ? { kind: "deleted" }
       : { kind: "moved", windowEnd }
     : { kind: "kept" };
-  logger.log("backfill", {
+  logTask(session, "backfill", {
     ...context,
     hits: hits.length,
     newItems,

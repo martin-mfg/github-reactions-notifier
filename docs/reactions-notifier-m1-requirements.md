@@ -267,20 +267,25 @@ container.
 - Vercel Cron runs **every minute**. It (a) starts worker invocations and (b) reaps expired
   leases. It makes **no GitHub calls** and enqueues nothing.
 - How many worker invocations each cron run starts: make it configurable, start with 1.
-  `[WHY]` Idle workers wait instead of exiting, so each runs for most of `maxDuration`. One per
-  cron run already keeps about 10 invocations alive at the same time.
 - Functions run for up to 800 s (`maxDuration`). A worker invocation loops: claim a job, run
   **one task** (§9.1) or one `deliver` job, release it, and repeat. When nothing is due, it
-  does **not** exit. It waits `IDLE_WAIT` without holding a lease, then tries to claim again.
-  Make `IDLE_WAIT` configurable, start with 60 s. The worker claims no job within two request
-  timeouts (4 min) of `maxDuration`, and exits instead of waiting past that point.
+  **exits**, unless a pending `deliver` job becomes due within `DELIVER_WAIT`: then it waits
+  for that without holding a lease, and claims again. Make `DELIVER_WAIT` configurable, start
+  with 15 s. The worker claims no job within two request timeouts (4 min) of `maxDuration`,
+  and exits instead of waiting past that point.
+  `[WHY]` Vercel bills an invocation's provisioned memory for as long as it runs, idle or not.
+  Workers that waited out `maxDuration` kept about 10 invocations alive around the clock. Now
+  that many run only while work keeps coming, and none while the queue is idle. Whatever falls
+  due later waits at most for the next cron run, a minute.
   `[WHY]` A task makes at most two requests: a poll's probe and drill-down, or a delivery's
   marker check and post. Releasing after every task keeps leases short and gives a per-task
   round-robin across users (§7.2).
   `[WHY]` The dispatcher may not sleep while holding a lease (§7.3), and the next `deliver` job
-  often becomes due shortly after the previous one: after the ≥ 1 s spacing, a bucket refill,
-  or the end of a pause (§12). A worker that is still running picks that job up. If it exited
-  instead, the job would wait for the next cron run.
+  often becomes due shortly after the previous one: after the ≥ 1 s spacing or a bucket refill
+  (§12). `DELIVER_WAIT` covers both, so a backlog drains at the bucket's rate. A worker that
+  exited instead would post one message per cron run. Longer waits, such as a pause or a
+  retry's backoff, are left to the cron run. A worker doesn't wait while another holds the
+  deliver lease, since that worker goes on delivering.
 
 ### 7.2 Job kinds (M1)
 | Kind | Rows | Purpose |
@@ -1146,7 +1151,7 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
    - `WriteContext.kind` carries the message kind: `opening`, `digest` or `one-off`.
    - No worker calls `claimJob` and `runDeliver` yet; that is step 10.
 10. **Cron wiring, worker loop, observability, health endpoint, and an end-to-end run** on one
-    real account: the worker's `IDLE_WAIT` loop and its exit before `maxDuration`, and the
+    real account: the worker's loop and its exit before `maxDuration`, and the
     NFR-7 logs and alarms.
     *Accept:* the end-to-end run opens the inbox, notifies a new reaction exactly once and no
     pre-existing one, and the health endpoint responds. Then take §15's measurements.
@@ -1155,7 +1160,7 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
     root `vercel.json`. The worker loop is `runWorker` in `apps/backend/src/worker/worker.ts`.
     The clock-offset check is `checkClockOffset` in `apps/backend/src/github/clock.ts`. The
     health endpoint is `apps/backend/api/status/up.ts`. The new tunables are `workersPerCron`
-    (1), `idleWaitSeconds` (60), `maxDurationSeconds` (800-10=790), and `clockOffsetAlarmSeconds` (2).
+    (1), `deliverWaitSeconds` (15, replacing `idleWaitSeconds`), `maxDurationSeconds` (800-10=790), and `clockOffsetAlarmSeconds` (2).
     Decided in step 10:
     - The cron run hosts its workers: it reaps, then runs `workersPerCron` worker loops in its
       own invocation and answers once they all exit. It makes no request to GRN's own origin.

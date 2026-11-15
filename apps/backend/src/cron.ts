@@ -2,8 +2,9 @@
  * @file The scheduler (§7.1). Vercel Cron calls `/api/cron` every minute with
  * `Authorization: Bearer $CRON_SECRET`. Each run reaps expired leases, logs the queue's
  * status, then runs
- * `workersPerCron` worker loops in this invocation and answers once they all exit, shortly
- * before `maxDuration`. Overlapping runs keep about ten workers alive. It makes no GitHub
+ * `workersPerCron` worker loops in this invocation and answers once they all exit: as soon as
+ * nothing is due, or shortly before `maxDuration` while work keeps coming. So overlapping runs
+ * keep up to about ten workers alive under load, and none while idle. It makes no GitHub
  * calls itself and enqueues nothing.
  */
 

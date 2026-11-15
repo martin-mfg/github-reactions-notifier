@@ -312,7 +312,7 @@ describe("runIncrementalDiscovery", () => {
     expect(rows[0]?.due_in).toBeCloseTo(defaultConfig.syncRetrySeconds, 0);
     expect(logger.warn).toHaveBeenCalledWith(
       "unexpected GraphQL response shape",
-      expect.objectContaining({ job: session.lease.id }),
+      expect.objectContaining({ user: session.lease.userId }),
     );
   });
 
@@ -483,7 +483,6 @@ describe("runIncrementalDiscovery", () => {
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining("overflowed"),
       expect.objectContaining({
-        job: session.lease.id,
         user: "U_alice",
         pass: "Issue",
         watermark: WATERMARK,

@@ -55,7 +55,7 @@ const STATS: WorkerStats = {
   deliveries: {},
   leasesLost: 0,
   errors: 0,
-  idleWaits: 0,
+  deliverWaits: 0,
   exit: "deadline",
   durationSeconds: 0,
 };

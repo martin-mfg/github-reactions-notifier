@@ -68,8 +68,12 @@ export interface Config {
   digestWindowSeconds: number;
   /** How many worker loops each cron run starts (§7.1). */
   workersPerCron: number;
-  /** `IDLE_WAIT`: an idle worker waits this long, holding no lease, before claiming again. */
-  idleWaitSeconds: number;
+  /**
+   * `DELIVER_WAIT`: a worker that finds nothing due waits, holding no lease, only for a pending
+   * `deliver` job due within this long; otherwise it exits and the next cron run picks up
+   * whatever falls due later (§7.1). Covers the ≥ 1 s spacing and a bucket refill (§12).
+   */
+  deliverWaitSeconds: number;
   /**
    * The function's `maxDuration` (§7.1). Workers claim no job within two request timeouts of
    * it. Must match the deployment's setting.
@@ -111,7 +115,7 @@ export const defaultConfig: Config = {
   snapshotRetryDelaySeconds: 60 * 60,
   digestWindowSeconds: 3 * 60,
   workersPerCron: 1,
-  idleWaitSeconds: 60,
+  deliverWaitSeconds: 15,
   maxDurationSeconds: 790,
   clockOffsetAlarmSeconds: 2,
   clockCheckIntervalSeconds: 60,

@@ -29,7 +29,53 @@ export interface SyncSession {
   /** GRN's site, linked from FR-17's notice. */
   siteUrl: string;
   config?: Config;
+  /** Collects the task's one log line; without it, each query logs its own `query cost`. */
+  taskLog?: TaskLog;
 }
+
+/** One request a task sent, as its log line reports it. */
+export interface RequestLog {
+  query?: string;
+  durationMs: number;
+  /** `rateLimit.cost`, if the response carried it. */
+  cost?: number;
+}
+
+/**
+ * What a sync task's one log line reports besides its own result (NFR-7): its score and its
+ * requests. `[WHY]` Vercel caps the log lines of a request (256), and a cron run works many
+ * tasks, so each logs one line instead of one per step. Problems are still logged on their own.
+ */
+export interface TaskLog {
+  /** Fields for the line, such as the task's score. */
+  fields: Record<string, unknown>;
+  requests: Array<RequestLog>;
+  /** Whether the task has written its line. */
+  written: boolean;
+}
+
+/**
+ * Writes a task's one log line: its result `fields`, then the session's {@link TaskLog}.
+ *
+ * @param session The leased `sync` job.
+ * @param message The task's name, such as `poll`.
+ * @param fields The task's context and result.
+ */
+export const logTask = (
+  session: SyncSession,
+  message: string,
+  fields: Record<string, unknown>,
+): void => {
+  const { taskLog } = session;
+  logger.log(message, {
+    ...fields,
+    ...taskLog?.fields,
+    ...(taskLog && { requests: taskLog.requests }),
+  });
+  if (taskLog) {
+    taskLog.written = true;
+  }
+};
 
 /** Why a query brought no usable data. {@link settleSyncFailure} decides what comes next. */
 export type SyncFailure =
@@ -75,7 +121,6 @@ const describe = (
   details?: ResponseDetails,
   request?: { query?: string | undefined; durationMs?: number | undefined },
 ) => ({
-  job: session.lease.id,
   user: session.lease.userId,
   kind: session.lease.kind,
   ...(request?.query !== undefined && { query: request.query }),
@@ -94,8 +139,9 @@ const describe = (
  * 1. Evaluates the budget guard. Without room, nothing is sent.
  * 2. Sends the query exactly once, aborted after the request timeout.
  * 3. Stores the response's `graphql` rate-limit headers, fenced by the job's lease.
- * 4. Logs the query's `rateLimit.cost` and alarms above `COST_ALARM`. Logs the offset of the
- *    response's `Date` header (NFR-7).
+ * 4. Records the query's duration and `rateLimit.cost` in the session's {@link TaskLog}, or
+ *    without one logs them, and alarms above `COST_ALARM`. Logs the offset of the response's
+ *    `Date` header (NFR-7).
  *
  * Every response no rule covers is logged as a warning and becomes a transient failure. Every
  * line about a response carries the query's name and the request's `durationMs`. A guard
@@ -140,6 +186,11 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
     query: options.query,
     durationMs: Math.round(performance.now() - startedAt),
   };
+  const logged: RequestLog = {
+    ...(options.query !== undefined && { query: options.query }),
+    durationMs: request.durationMs,
+  };
+  session.taskLog?.requests.push(logged);
   await checkClockOffset(db, outcome.details.date, describe(session), config);
   const headers = outcome.details.rateLimit;
   if (headers) {
@@ -158,6 +209,9 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
         return { ok: false, failure: { kind: "transient" } };
       }
       const cost = outcome.data.rateLimit?.cost;
+      if (cost !== undefined) {
+        logged.cost = cost;
+      }
       if (cost === undefined) {
         logger.warn(
           "query returned no rateLimit",
@@ -168,7 +222,7 @@ export const runQuery = async <TResult extends MeasuredResult, TVariables>(
           ...describe(session, undefined, request),
           cost,
         });
-      } else {
+      } else if (!session.taskLog) {
         logger.log("query cost", {
           ...describe(session, undefined, request),
           cost,

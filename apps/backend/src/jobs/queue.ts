@@ -102,6 +102,34 @@ const DELIVER_DUE = `
     )
   )`;
 
+/**
+ * Seconds until the next `deliver` job is due by {@link DELIVER_DUE}: the latest of the oldest
+ * eligible `run_at`, 1 s after the last write, and the bucket's next token. No rows while no
+ * job is eligible, or while another worker holds the deliver lease, since that worker goes on
+ * delivering. Parameter: $1 = refill rate per second.
+ */
+const NEXT_DELIVER_DUE_IN = `
+  SELECT extract(epoch FROM greatest(
+           min(j.run_at),
+           b.level_at + interval '1 second',
+           b.level_at + make_interval(
+             secs => greatest(0, (1 - b.level) / $1::double precision))
+         ) - now())::double precision AS due_in
+  FROM jobs j CROSS JOIN dispatch_bucket b
+  WHERE j.kind = 'deliver' AND j.locked_by IS NULL
+    AND (
+      j.payload ? 'title'
+      OR EXISTS (
+        SELECT 1 FROM notification_channels c
+        WHERE c.user_id = j.user_id AND c.kind = 'github_issue'
+          AND c.disabled_at IS NULL AND c.target IS NOT NULL
+      )
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM jobs l WHERE l.kind = 'deliver' AND l.locked_by IS NOT NULL
+    )
+  GROUP BY b.level_at, b.level`;
+
 const claimSql = (from: string, due: string): string => `
   UPDATE jobs SET locked_by = gen_random_uuid(), locked_at = now(), attempts = attempts + 1
   WHERE id = (
@@ -174,6 +202,26 @@ export const claimJob = async (
         attempts: row.attempts,
       }
     : null;
+};
+
+/**
+ * How long until a `deliver` job is due, so an idle worker can wait for it instead of exiting
+ * (§7.1).
+ *
+ * @param db Pool to read with.
+ * @param config Tunables: the bucket's refill rate.
+ * @returns Seconds until the next `deliver` job is due (≤ 0 if one is due now), or `null` if
+ *   none is pending or another worker holds the deliver lease.
+ */
+export const nextDeliverDueIn = async (
+  db: Queryable,
+  config: Config = defaultConfig,
+): Promise<number | null> => {
+  const { rows } = await db.query<{ due_in: number }>(NEXT_DELIVER_DUE_IN, [
+    config.dispatchRatePerHour / 3600,
+  ]);
+  const row = rows[0];
+  return row ? row.due_in : null;
 };
 
 /**

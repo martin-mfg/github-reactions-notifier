@@ -16,6 +16,7 @@ import type { Database } from "../src/db.ts";
 import { runBackfill } from "../src/discovery/backfill.ts";
 import { runIncrementalDiscovery } from "../src/discovery/incremental.ts";
 import { runThreadScans } from "../src/discovery/threadScans.ts";
+import { logTask } from "../src/github/syncClient.ts";
 import type { SyncSession } from "../src/github/syncClient.ts";
 import { claimJob } from "../src/jobs/queue.ts";
 import { runPoll } from "../src/polling/poll.ts";
@@ -358,11 +359,17 @@ describe("runSyncTask", () => {
     const { session, categoryId } = await setUp();
 
     expect(await runSyncTask(session)).toMatchObject({ kind: "backfill" });
-    expect(runBackfill).toHaveBeenCalledWith(session, categoryId);
+    expect(runBackfill).toHaveBeenCalledWith(
+      expect.objectContaining(session),
+      categoryId,
+    );
 
     await discovered("10 minutes", "1 minute");
     await runSyncTask(session);
-    expect(runIncrementalDiscovery).toHaveBeenCalledWith(session, categoryId);
+    expect(runIncrementalDiscovery).toHaveBeenCalledWith(
+      expect.objectContaining(session),
+      categoryId,
+    );
 
     await db.query(
       `INSERT INTO thread_scans (category_id, thread_node_id, since_at, thread_created_at,
@@ -371,11 +378,14 @@ describe("runSyncTask", () => {
       [categoryId],
     );
     await runSyncTask(session);
-    expect(runThreadScans).toHaveBeenCalledWith(session, categoryId);
+    expect(runThreadScans).toHaveBeenCalledWith(
+      expect.objectContaining(session),
+      categoryId,
+    );
 
     await track("I_1", "1 day", "1 second");
     await runSyncTask(session);
-    expect(runPoll).toHaveBeenCalledWith(session);
+    expect(runPoll).toHaveBeenCalledWith(expect.objectContaining(session));
 
     await db.query("DELETE FROM backfill_windows");
     await db.query("DELETE FROM thread_scans");
@@ -392,7 +402,10 @@ describe("runSyncTask", () => {
       "SELECT id::text FROM subscriptions",
     );
     expect(await runSyncTask(session)).toMatchObject({ kind: "snapshot" });
-    expect(runSnapshotSweep).toHaveBeenCalledWith(session, rows[0]?.id);
+    expect(runSnapshotSweep).toHaveBeenCalledWith(
+      expect.objectContaining(session),
+      rows[0]?.id,
+    );
   });
 
   it("releases the job until the next item is due when idle", async () => {
@@ -411,5 +424,80 @@ describe("runSyncTask", () => {
     );
     expect(rows[0]?.locked_by).toBeNull();
     expect(rows[0]?.due_in).toBeCloseTo(60, -1);
+  });
+  describe("one log line per task", () => {
+    const linesLogged = () =>
+      vi.mocked(logger.log).mock.calls.map(([message]) => message as string);
+
+    it("adds the score and requests to the line the task writes", async () => {
+      const { session } = await setUp();
+      vi.mocked(runBackfill).mockImplementationOnce((taskSession) => {
+        taskSession.taskLog?.requests.push({
+          query: "backfill",
+          durationMs: 12,
+          cost: 1,
+        });
+        logTask(taskSession, "backfill", { user: "U_alice", hits: 3 });
+        return Promise.resolve({ ok: true, status: "window-done" } as never);
+      });
+
+      await runSyncTask(session);
+
+      expect(linesLogged()).toEqual(["backfill"]);
+      expect(logger.log).toHaveBeenCalledWith("backfill", {
+        user: "U_alice",
+        hits: 3,
+        score: expect.any(Number) as number,
+        requests: [{ query: "backfill", durationMs: 12, cost: 1 }],
+      });
+    });
+
+    it("writes a sync task line for a task that wrote none", async () => {
+      const { session, categoryId } = await setUp();
+      vi.mocked(runBackfill).mockImplementationOnce((taskSession) => {
+        taskSession.taskLog?.requests.push({
+          query: "backfill",
+          durationMs: 7,
+        });
+        return Promise.resolve({ ok: false, failure: { kind: "transient" } });
+      });
+
+      await runSyncTask(session);
+
+      expect(linesLogged()).toEqual(["sync task"]);
+      expect(logger.log).toHaveBeenCalledWith("sync task", {
+        user: "U_alice",
+        kind: "sync",
+        task: "backfill",
+        category: categoryId,
+        score: expect.any(Number) as number,
+        requests: [{ query: "backfill", durationMs: 7 }],
+      });
+    });
+
+    it("writes a sync task line when idle", async () => {
+      const { session } = await setUp();
+      await db.query("DELETE FROM backfill_windows");
+      await track("I_1", "3 minutes", "1 minute");
+
+      await runSyncTask(session);
+
+      expect(linesLogged()).toEqual(["sync task"]);
+      expect(logger.log).toHaveBeenCalledWith("sync task", {
+        user: "U_alice",
+        kind: "sync",
+        task: "idle",
+        until: expect.any(String) as string,
+      });
+    });
+
+    it("still writes the line when the task throws", async () => {
+      const { session } = await setUp();
+      vi.mocked(runBackfill).mockRejectedValueOnce(new Error("boom"));
+
+      await expect(runSyncTask(session)).rejects.toThrow("boom");
+
+      expect(linesLogged()).toEqual(["sync task"]);
+    });
   });
 });

@@ -11,6 +11,7 @@ import type { DeliverResult, MachineAccount } from "../inbox/dispatcher.ts";
 import {
   LeaseLostError,
   claimJob,
+  nextDeliverDueIn,
   releaseSync,
   withLease,
 } from "../jobs/queue.ts";
@@ -20,6 +21,8 @@ import type { SyncTask } from "../sync/schedule.ts";
 import { loadToken } from "../users/accounts.ts";
 
 type JobKind = Lease["kind"];
+
+const MIN_WAIT_MS = 100;
 
 /** Everything a worker needs from outside. */
 export interface WorkerDeps {
@@ -46,9 +49,10 @@ export interface WorkerStats {
   leasesLost: number;
   /** Jobs that threw; their lease is left for the reaper. */
   errors: number;
-  idleWaits: number;
-  /** Why the loop ended. */
-  exit: "deadline" | "claim-failed";
+  /** Waits for a pending `deliver` job to fall due (`DELIVER_WAIT`). */
+  deliverWaits: number;
+  /** Why the loop ended: `idle` when nothing was due and no delivery due soon. */
+  exit: "idle" | "deadline" | "claim-failed";
   durationSeconds: number;
 }
 
@@ -96,8 +100,10 @@ const runSyncJob = async (
 /**
  * One worker invocation (§7.1): claims a job, runs one task or one `deliver` job, releases
  * it, and repeats. The two kinds take turns being claimed first. When nothing is due, it
- * waits `IDLE_WAIT` without holding a lease, then claims again. It claims no job within two
- * request timeouts of `maxDuration`, and exits instead of waiting past that point.
+ * exits, unless a pending `deliver` job falls due within `DELIVER_WAIT`: then it waits for
+ * that without holding a lease, and claims again. `[WHY]` Instances are billed while they
+ * run, idle or not; the next cron run picks up whatever falls due later. It claims no job
+ * within two request timeouts of `maxDuration`, and exits instead of waiting past that point.
  *
  * A job that throws keeps its lease, so the reaper retries it and alerts on repeats (§7.3);
  * the worker goes on with the next one. A failed claim ends the invocation. It never throws.
@@ -114,14 +120,13 @@ export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
   const stopClaimingAt =
     startedAt +
     (config.maxDurationSeconds - 2 * config.requestTimeoutSeconds) * 1000;
-  const idleWaitMs = config.idleWaitSeconds * 1000;
   const stats: WorkerStats = {
     claims: { sync: 0, deliver: 0 },
     syncTasks: {},
     deliveries: {},
     leasesLost: 0,
     errors: 0,
-    idleWaits: 0,
+    deliverWaits: 0,
     exit: "deadline",
     durationSeconds: 0,
   };
@@ -129,10 +134,14 @@ export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
   let order: [JobKind, JobKind] = ["deliver", "sync"];
   while (now() < stopClaimingAt) {
     let lease: Lease | null;
+    let dueIn: number | null = null;
     try {
       lease =
         (await claimJob(deps.db, order[0], config)) ??
         (await claimJob(deps.db, order[1], config));
+      if (!lease) {
+        dueIn = await nextDeliverDueIn(deps.db, config);
+      }
     } catch (error) {
       logger.error("worker: claim failed", { error });
       stats.exit = "claim-failed";
@@ -140,17 +149,28 @@ export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
     }
 
     if (!lease) {
-      if (now() + idleWaitMs >= stopClaimingAt) {
+      if (dueIn === null || dueIn > config.deliverWaitSeconds) {
+        stats.exit = "idle";
         break;
       }
-      stats.idleWaits += 1;
-      await sleep(idleWaitMs);
+      // at least a moment, so a job due now but not claimable can't spin the loop
+      const waitMs = Math.max(dueIn * 1000, MIN_WAIT_MS);
+      if (now() + waitMs >= stopClaimingAt) {
+        break;
+      }
+      stats.deliverWaits += 1;
+      await sleep(waitMs);
       continue;
     }
 
     stats.claims[lease.kind] += 1;
     order = lease.kind === "sync" ? ["deliver", "sync"] : ["sync", "deliver"];
-    const context = { job: lease.id, user: lease.userId, kind: lease.kind };
+    // a user has one sync job, so only a delivery's id tells it apart: the id is its marker
+    const context = {
+      ...(lease.kind === "deliver" && { job: lease.id }),
+      user: lease.userId,
+      kind: lease.kind,
+    };
     const jobStartedAt = now();
     let result: string;
     try {

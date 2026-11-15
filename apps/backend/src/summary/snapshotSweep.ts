@@ -13,7 +13,7 @@ import type {
 
 import { defaultConfig } from "../config.ts";
 import { validReactionSnapshot } from "../github/queryValidation.ts";
-import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
+import { logTask, runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { withLease } from "../jobs/queue.ts";
 
@@ -155,7 +155,6 @@ export const runSnapshotSweep = async (
   const config = session.config ?? defaultConfig;
   const { lease } = session;
   const context = {
-    job: lease.id,
     user: lease.userId,
     kind: lease.kind,
     subscription: subscriptionId,
@@ -310,7 +309,7 @@ export const runSnapshotSweep = async (
     }
   }
   const deferred = ids("defer").length;
-  logger.log("snapshot", {
+  logTask(session, "snapshot", {
     ...context,
     items: rows.length,
     filled: stored.filled,

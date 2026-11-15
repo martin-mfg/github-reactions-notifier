@@ -5,7 +5,7 @@ import type { Queryable } from "../db.ts";
 import { runBackfill } from "../discovery/backfill.ts";
 import { runIncrementalDiscovery } from "../discovery/incremental.ts";
 import { runThreadScans } from "../discovery/threadScans.ts";
-import type { SyncSession } from "../github/syncClient.ts";
+import type { SyncSession, TaskLog } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
 import { runPoll } from "../polling/poll.ts";
 import { runSnapshotSweep } from "../summary/snapshotSweep.ts";
@@ -185,6 +185,9 @@ export const chooseSyncTask = async (
  * run by releasing it (or settling its failure), so the next claim scores afresh. If nothing
  * is eligible, the job is released until the first item or category is due again.
  *
+ * Each task logs one line (NFR-7): its own summary, which also carries its score and requests
+ * (see {@link TaskLog}), or, if it wrote none, a `sync task` line.
+ *
  * @param session The leased `sync` job.
  * @returns The task that ran.
  * @throws {LeaseLostError} If the lease was lost.
@@ -196,37 +199,49 @@ export const runSyncTask = async (session: SyncSession): Promise<SyncTask> => {
     lease.userId,
     session.config ?? defaultConfig,
   );
-  logger.log("sync task", {
-    job: lease.id,
-    user: lease.userId,
-    kind: lease.kind,
-    task: task.kind,
-    ...("categoryId" in task && { category: task.categoryId }),
-    ...("subscriptionId" in task && { subscription: task.subscriptionId }),
-    ...("score" in task && { score: task.score }),
-    ...("until" in task && { until: task.until.toISOString() }),
-  });
-  switch (task.kind) {
-    case "poll":
-      await runPoll(session);
-      break;
-    case "discovery":
-      await runIncrementalDiscovery(session, task.categoryId);
-      break;
-    case "backfill":
-      await runBackfill(session, task.categoryId);
-      break;
-    case "threadScan":
-      await runThreadScans(session, task.categoryId);
-      break;
-    case "snapshot":
-      await runSnapshotSweep(session, task.subscriptionId);
-      break;
-    case "idle":
-      await withLease(session.db, lease, (client) =>
-        releaseSync(client, lease, task.until),
-      );
-      break;
+  const taskLog: TaskLog = {
+    fields: { ...("score" in task && { score: task.score }) },
+    requests: [],
+    written: false,
+  };
+  const taskSession: SyncSession = { ...session, taskLog };
+  try {
+    switch (task.kind) {
+      case "poll":
+        await runPoll(taskSession);
+        break;
+      case "discovery":
+        await runIncrementalDiscovery(taskSession, task.categoryId);
+        break;
+      case "backfill":
+        await runBackfill(taskSession, task.categoryId);
+        break;
+      case "threadScan":
+        await runThreadScans(taskSession, task.categoryId);
+        break;
+      case "snapshot":
+        await runSnapshotSweep(taskSession, task.subscriptionId);
+        break;
+      case "idle":
+        await withLease(session.db, lease, (client) =>
+          releaseSync(client, lease, task.until),
+        );
+        break;
+    }
+  } finally {
+    // idle, a failure or an early return: the task wrote no line of its own
+    if (!taskLog.written) {
+      logger.log("sync task", {
+        user: lease.userId,
+        kind: lease.kind,
+        task: task.kind,
+        ...("categoryId" in task && { category: task.categoryId }),
+        ...("subscriptionId" in task && { subscription: task.subscriptionId }),
+        ...("until" in task && { until: task.until.toISOString() }),
+        ...taskLog.fields,
+        ...(taskLog.requests.length > 0 && { requests: taskLog.requests }),
+      });
+    }
   }
   return task;
 };

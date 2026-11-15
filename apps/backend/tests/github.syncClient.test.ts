@@ -17,7 +17,11 @@ import {
 import { defaultConfig } from "../src/config.ts";
 import type { Database } from "../src/db.ts";
 import { runQuery, settleSyncFailure } from "../src/github/syncClient.ts";
-import type { SyncFailure, SyncSession } from "../src/github/syncClient.ts";
+import type {
+  SyncFailure,
+  SyncSession,
+  TaskLog,
+} from "../src/github/syncClient.ts";
 import { LeaseLostError, claimJob } from "../src/jobs/queue.ts";
 
 import { createTestDatabase } from "./_db.ts";
@@ -155,7 +159,7 @@ describe("runQuery", () => {
     });
     expect(logger.log).toHaveBeenCalledWith(
       "query cost",
-      expect.objectContaining({ job: session.lease.id, cost: 1 }),
+      expect.objectContaining({ user: session.lease.userId, cost: 1 }),
     );
     expect(logger.error).not.toHaveBeenCalled();
 
@@ -176,7 +180,36 @@ describe("runQuery", () => {
     await runQuery(session, resolving({ data: viewer(4) }), {});
     expect(logger.error).toHaveBeenCalledWith(
       "ALERT: query cost above the alarm",
-      expect.objectContaining({ job: session.lease.id, cost: 4 }),
+      expect.objectContaining({ user: session.lease.userId, cost: 4 }),
+    );
+  });
+
+  it("records each query in the task's log instead of logging its cost", async () => {
+    const taskLog: TaskLog = { fields: {}, requests: [], written: false };
+    const session = { ...(await leasedSession()), taskLog };
+
+    await runQuery(
+      session,
+      resolving({ data: viewer(1) }),
+      {},
+      {
+        query: "probe",
+      },
+    );
+    await runQuery(session, resolving({ data: viewer(4) }), {});
+
+    expect(taskLog.requests).toEqual([
+      { query: "probe", durationMs: expect.any(Number) as number, cost: 1 },
+      { durationMs: expect.any(Number) as number, cost: 4 },
+    ]);
+    expect(logger.log).not.toHaveBeenCalledWith(
+      "query cost",
+      expect.anything(),
+    );
+    // an alarm is still its own line
+    expect(logger.error).toHaveBeenCalledWith(
+      "ALERT: query cost above the alarm",
+      expect.objectContaining({ cost: 4 }),
     );
   });
 
@@ -201,7 +234,7 @@ describe("runQuery", () => {
           message === "ALERT: GitHub's clock is offset above the alarm",
       );
     expect(alerts).toHaveLength(2);
-    expect(alerts[0]?.[1]).toMatchObject({ job: session.lease.id });
+    expect(alerts[0]?.[1]).toMatchObject({ user: session.lease.userId });
   });
 
   it("sends nothing while the guard leaves no room", async () => {
@@ -218,7 +251,6 @@ describe("runQuery", () => {
     });
     expect(fetcher).not.toHaveBeenCalled();
     expect(logger.log).toHaveBeenCalledWith("budget guard: request refused", {
-      job: session.lease.id,
       user: "U_alice",
       kind: "sync",
       query: "probe",
@@ -243,7 +275,6 @@ describe("runQuery", () => {
     );
 
     expect(logger.log).toHaveBeenCalledWith("query cost", {
-      job: session.lease.id,
       user: "U_alice",
       kind: "sync",
       query: "discovery",
@@ -263,7 +294,6 @@ describe("runQuery", () => {
 
     expect(result).toEqual({ ok: false, failure: { kind: "transient" } });
     expect(logger.warn).toHaveBeenCalledWith("unexpected GraphQL errors", {
-      job: session.lease.id,
       user: "U_alice",
       kind: "sync",
       durationMs: expect.any(Number) as number,
@@ -327,7 +357,6 @@ describe("runQuery", () => {
       expect(logger.warn).toHaveBeenCalledWith(
         "unexpected response",
         expect.objectContaining({
-          job: session.lease.id,
           user: "U_alice",
           kind: "sync",
           status,

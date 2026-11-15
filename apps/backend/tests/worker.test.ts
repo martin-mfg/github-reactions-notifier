@@ -114,7 +114,7 @@ const STOP_CLAIMING_MS =
   1000;
 
 describe("runWorker", () => {
-  it("runs both kinds, then waits IDLE_WAIT between claims and exits before maxDuration", async () => {
+  it("runs both kinds, then exits once nothing is due", async () => {
     await signUpAlice();
     const clock = fakeClock();
 
@@ -127,23 +127,16 @@ describe("runWorker", () => {
       siteUrl: SITE_URL,
       lease: { kind: "sync", userId: "U_alice" },
     });
-    // idle from 0 s: waits of 60 s while one more ends before STOP_CLAIMING_MS
-    expect(clock.sleep).toHaveBeenCalledTimes(9);
-    expect(clock.sleep).toHaveBeenCalledWith(
-      defaultConfig.idleWaitSeconds * 1000,
-    );
-    expect(clock.t + defaultConfig.idleWaitSeconds * 1000).toBeGreaterThan(
-      STOP_CLAIMING_MS,
-    );
+    expect(clock.sleep).not.toHaveBeenCalled();
     expect(stats).toEqual({
       claims: { sync: 1, deliver: 1 },
       syncTasks: { poll: 1 },
       deliveries: { posted: 1 },
       leasesLost: 0,
       errors: 0,
-      idleWaits: 9,
-      exit: "deadline",
-      durationSeconds: 540,
+      deliverWaits: 0,
+      exit: "idle",
+      durationSeconds: 0,
     });
     expect(logger.log).toHaveBeenCalledWith("worker finished", stats);
   });
@@ -167,7 +160,6 @@ describe("runWorker", () => {
       durationMs: 0,
     });
     expect(logger.log).toHaveBeenCalledWith("job finished", {
-      job: expect.any(String) as string,
       user: "U_alice",
       kind: "sync",
       result: "backfill",
@@ -175,18 +167,59 @@ describe("runWorker", () => {
     });
   });
 
-  it("claims a job that became due while it waited", async () => {
+  /** Queues a message for Alice, due after `runAt` (a Postgres interval). */
+  const queueMessage = (runAt: string) =>
+    db.query(
+      `INSERT INTO jobs (kind, user_id, payload, run_at)
+       VALUES ('deliver', 'U_alice', '{"title": "x", "body": "x"}', now() + $1::interval)`,
+      [runAt],
+    );
+
+  it("waits for a delivery due within DELIVER_WAIT, then claims it", async () => {
     await signUpAlice();
+    await queueMessage("5 seconds");
     const clock = fakeClock();
+    // the database's clock doesn't follow the fake one, so the wait makes the job due
     clock.sleep.mockImplementationOnce(async (ms: number) => {
       clock.t += ms;
-      await db.query("UPDATE jobs SET run_at = now() WHERE kind = 'sync'");
+      await db.query(
+        "UPDATE jobs SET run_at = now() WHERE kind = 'deliver' AND run_at > now()",
+      );
     });
 
     const stats = await runWorker(deps(clock));
 
-    expect(stats.claims).toEqual({ sync: 2, deliver: 1 });
-    expect(runSyncTask).toHaveBeenCalledTimes(2);
+    expect(clock.sleep).toHaveBeenCalledOnce();
+    const waited = clock.sleep.mock.calls[0]?.[0] ?? 0;
+    expect(waited).toBeGreaterThan(3000);
+    expect(waited).toBeLessThanOrEqual(5000);
+    expect(stats).toMatchObject({
+      claims: { sync: 1, deliver: 2 },
+      deliverWaits: 1,
+      exit: "idle",
+    });
+  });
+
+  it("exits instead of waiting for a delivery due later than DELIVER_WAIT", async () => {
+    await signUpAlice();
+    await queueMessage(`${defaultConfig.deliverWaitSeconds + 30} seconds`);
+    const clock = fakeClock();
+
+    const stats = await runWorker(deps(clock));
+
+    expect(clock.sleep).not.toHaveBeenCalled();
+    expect(stats).toMatchObject({ deliverWaits: 0, exit: "idle" });
+  });
+
+  it("doesn't wait for a delivery past the point where it stops claiming", async () => {
+    await signUpAlice();
+    await queueMessage("5 seconds");
+    const clock = fakeClock(STOP_CLAIMING_MS - 2000);
+
+    const stats = await runWorker(deps(clock, { startedAt: 0 }));
+
+    expect(clock.sleep).not.toHaveBeenCalled();
+    expect(stats.exit).toBe("deadline");
   });
 
   it("alternates which kind it claims first", async () => {
@@ -256,7 +289,8 @@ describe("runWorker", () => {
       claims: { sync: 1, deliver: 1 },
       leasesLost: 1,
       errors: 1,
-      exit: "deadline",
+      // the deliver job keeps its lease, so no delivery is worth waiting for
+      exit: "idle",
     });
     expect((await syncJob())?.locked_by).not.toBeNull();
     expect(logger.error).toHaveBeenCalledWith(

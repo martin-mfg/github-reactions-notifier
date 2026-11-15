@@ -401,7 +401,7 @@ describe("runBackfill", () => {
     );
     expect(logger.warn).toHaveBeenCalledWith(
       "unexpected GraphQL response shape",
-      expect.objectContaining({ job: session.lease.id, status: 200 }),
+      expect.objectContaining({ user: session.lease.userId, status: 200 }),
     );
   });
 
@@ -644,7 +644,6 @@ describe("runBackfill", () => {
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining("stuck in one second"),
       expect.objectContaining({
-        job: session.lease.id,
         second: "2026-10-01T12:00:00+00:00",
         windowEnd: before,
       }),
@@ -815,7 +814,7 @@ describe("runThreadScans", () => {
       );
       expect(logger.warn).toHaveBeenCalledWith(
         "unexpected GraphQL response shape",
-        expect.objectContaining({ job: session.lease.id }),
+        expect.objectContaining({ user: session.lease.userId }),
       );
     },
   );

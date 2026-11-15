@@ -18,7 +18,7 @@ import type {
 import { defaultConfig } from "../config.ts";
 import { present } from "../discovery/results.ts";
 import { validReactionPoll } from "../github/queryValidation.ts";
-import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
+import { logTask, runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { releaseSync, withLease } from "../jobs/queue.ts";
 import { fanOut } from "../pipeline/fanOut.ts";
@@ -164,7 +164,7 @@ export const runPoll = async (
 ): Promise<PollResult> => {
   const config = session.config ?? defaultConfig;
   const { lease } = session;
-  const context = { job: lease.id, user: lease.userId, kind: lease.kind };
+  const context = { user: lease.userId, kind: lease.kind };
 
   const { rows: items } = await session.db.query<DueItem>(
     `SELECT node_id, floor(extract(epoch FROM watermark_at) * 1000)::float8 AS watermark_ms,
@@ -374,7 +374,7 @@ export const runPoll = async (
         (stored.detectedAt.getTime() - reaction.reacted_at.getTime()) / 1000,
     )
     .sort((a, b) => a - b);
-  logger.log("poll", {
+  logTask(session, "poll", {
     ...context,
     probed: items.length,
     drilled: toDrill.length,

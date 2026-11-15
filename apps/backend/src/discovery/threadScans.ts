@@ -14,7 +14,7 @@ import type {
 
 import { defaultConfig } from "../config.ts";
 import { validThreadScans } from "../github/queryValidation.ts";
-import { runQuery, settleSyncFailure } from "../github/syncClient.ts";
+import { logTask, runQuery, settleSyncFailure } from "../github/syncClient.ts";
 import type { SyncFailure, SyncSession } from "../github/syncClient.ts";
 import { withLease } from "../jobs/queue.ts";
 import { finishSyncTask, queueSummaryIfComplete } from "../summary/summary.ts";
@@ -264,7 +264,7 @@ export const runThreadScans = async (
   const advanced = count("advance");
   const finished = count("finish");
   const dropped = count("drop");
-  logger.log("thread scans", {
+  logTask(session, "thread scans", {
     ...context,
     threads: rows.length,
     newItems,

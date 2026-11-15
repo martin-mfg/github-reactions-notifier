@@ -18,7 +18,6 @@ export const taskContext = (
   session: SyncSession,
   categoryId: string,
 ): TaskContext => ({
-  job: session.lease.id,
   user: session.lease.userId,
   kind: session.lease.kind,
   category: categoryId,

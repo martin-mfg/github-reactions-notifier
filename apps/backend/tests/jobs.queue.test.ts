@@ -18,6 +18,7 @@ import {
   deleteJob,
   findBudgetHeldJobs,
   lockSyncAndUser,
+  nextDeliverDueIn,
   readDispatchBucket,
   reapExpiredLeases,
   releaseDeliver,
@@ -594,6 +595,58 @@ describe("claiming deliver jobs", () => {
       await insertJob("deliver", "U_b", "-2 minutes", { body: "b" });
       await setBucket(1, "30 seconds");
       expect(await claim("deliver")).toBeNull();
+    });
+  });
+
+  describe("nextDeliverDueIn", () => {
+    const dueIn = () => nextDeliverDueIn(db, defaultConfig);
+
+    it("is null without a pending job", async () => {
+      expect(await dueIn()).toBeNull();
+    });
+
+    it("is null while only jobs waiting for an inbox issue are pending", async () => {
+      await insertUser("U_new");
+      await insertChannel("U_new", null);
+      await insertJob("deliver", "U_new", "-1 minute", { body: "notice" });
+      expect(await dueIn()).toBeNull();
+    });
+
+    it("is null while another worker holds the deliver lease", async () => {
+      await insertJob("deliver", "U_a", "-2 minutes", { body: "a" });
+      await insertJob("deliver", "U_b", "-1 minute", { body: "b" });
+      await mustClaim("deliver");
+      expect(await dueIn()).toBeNull();
+    });
+
+    it("is ≤ 0 when a job is due now", async () => {
+      await insertJob("deliver", "U_a", "-1 minute", { body: "a" });
+      expect(await dueIn()).toBeLessThanOrEqual(0);
+    });
+
+    it("waits for the oldest job's run_at", async () => {
+      await insertJob("deliver", "U_a", "40 seconds", { body: "a" });
+      await insertJob("deliver", "U_b", "20 seconds", { body: "b" });
+      expect(await dueIn()).toBeCloseTo(20, 0);
+    });
+
+    it("waits for 1 s after the last write", async () => {
+      await insertJob("deliver", "U_a", "-1 minute", { body: "a" });
+      await setBucket(5, "-0.25 seconds");
+      expect(await dueIn()).toBeCloseTo(0.75, 1);
+    });
+
+    it("waits for the bucket's next token", async () => {
+      await insertJob("deliver", "U_a", "-1 minute", { body: "a" });
+      // 480/h refills one token every 7.5 s
+      await setBucket(0, "-5 seconds");
+      expect(await dueIn()).toBeCloseTo(2.5, 1);
+    });
+
+    it("waits for the end of a pause", async () => {
+      await insertJob("deliver", "U_a", "-1 minute", { body: "a" });
+      await setBucket(1, "90 seconds");
+      expect(await dueIn()).toBeCloseTo(91, 0);
     });
   });
 });

@@ -1,4 +1,4 @@
-import { format } from "node:util";
+import { format, formatWithOptions } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -9,6 +9,13 @@ afterEach(() => {
 });
 
 const prefix = { log: "", warn: "GRN-PROBLEM ", error: "GRN-PROBLEM " };
+
+/** `format`, on one line as the logger writes it. */
+const oneLine = (...args: Array<unknown>): string =>
+  formatWithOptions(
+    { compact: true, breakLength: Infinity },
+    ...args,
+  ).replaceAll("\n", "\\n");
 
 describe("logger", () => {
   it.each(["log", "warn", "error"] as const)(
@@ -62,7 +69,7 @@ describe("logger", () => {
 
     logger.error("OAuth callback failed", error);
 
-    const original = format("OAuth callback failed", error);
+    const original = oneLine("OAuth callback failed", error);
     for (const token of [
       "gho_Secret123",
       "gho_Header456",
@@ -83,6 +90,38 @@ describe("logger", () => {
     expect(error.config).toBe(config);
     expect(config.headers.Authorization).toBe("Bearer gho_Header456");
     expect(config.data).toBe("client_secret=gho_Secret123");
+  });
+
+  it("writes a long, deeply nested object on one line", () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stats = {
+      claims: { sync: 120, deliver: 3 },
+      syncTasks: { poll: 100, discovery: 15, backfill: 4, idle: 1 },
+      nested: { a: { b: { c: { d: 1 } } } },
+      users: ["U_1", "U_2", "U_3", "U_4", "U_5", "U_6", "U_7", "U_8"],
+      durationSeconds: 541,
+    };
+
+    logger.log("worker finished", stats);
+
+    const line = output.mock.calls[0]?.[0] as string;
+    expect(format("worker finished", stats)).toContain("\n");
+    expect(line).not.toContain("\n");
+    expect(line).toContain("syncTasks: { poll: 100, discovery: 15");
+    expect(line).toContain("'U_8' ]");
+  });
+
+  it("escapes the newlines of a stack trace", () => {
+    const output = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const error = new Error("boom");
+
+    logger.error("job failed", { error });
+
+    const line = output.mock.calls[0]?.[0] as string;
+    expect(line).not.toContain("\n");
+    expect(line).toMatch(/Error: boom\\n +at /);
   });
 
   it("redacts after applying console formatting placeholders", () => {

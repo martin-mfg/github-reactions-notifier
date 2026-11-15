@@ -274,7 +274,6 @@ describe("runSnapshotSweep", () => {
       expect(logger.error).toHaveBeenCalledWith(
         "snapshot stuck, summary held",
         {
-          job: session.lease.id,
           user: "U_alice",
           kind: "sync",
           subscription: subscriptionId,
