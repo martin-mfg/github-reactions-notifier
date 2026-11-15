@@ -1202,8 +1202,9 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
       is accurate to about ±0.5 s plus the response's latency. A failed check logs a warning
       and never fails the request.
     - Every `warn` and `error` line starts with `GRN-PROBLEM` (added by the shared logger), so
-      one search finds every problem. Info lines that report problems (a missing poll item, a
-      gone thread, a transient write failure, a rescued lease, a dispatcher pause) are warnings.
+      one search finds every problem. Info lines that report problems (a gone thread, a
+      transient write failure, a rescued lease, a dispatcher pause) are warnings. A missing poll
+      item is info: a deleted or private item is routine, not a problem.
     - Durations: every GraphQL query logs its `query` name and `durationMs`; every
       machine-account request logs its `method` and `durationMs` (a success as `machine account
       request`); every job logs its `result` and `durationMs`: a `sync` job on its task's one

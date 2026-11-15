@@ -351,7 +351,8 @@ export const runPoll = async (
   const { newReactions, queued } = stored;
 
   for (const { item, query } of missing) {
-    logger.warn("poll: item missing, skipped", {
+    // not a problem: deleted or private items are routine, and M1 keeps polling them (§9.3)
+    logger.log("poll: item missing, skipped", {
       ...context,
       item: item.node_id,
       query,
