@@ -106,8 +106,8 @@ export const defaultConfig: Config = {
   costAlarm: 3,
   syncRetrySeconds: 5 * 60,
   threadScanBatch: 50,
-  minRecheckSeconds: 4 * 60,
-  discoveryMinRecheckSeconds: 4 * 60,
+  minRecheckSeconds: 6 * 60,
+  discoveryMinRecheckSeconds: 6 * 60,
   scoreExponent: 0.8,
   discoveryWeight: 4,
   probeBatch: 50,
@@ -118,5 +118,5 @@ export const defaultConfig: Config = {
   deliverWaitSeconds: 10,
   maxDurationSeconds: 790,
   clockOffsetAlarmSeconds: 1,
-  clockCheckIntervalSeconds: 120,
+  clockCheckIntervalSeconds: 180,
 };
