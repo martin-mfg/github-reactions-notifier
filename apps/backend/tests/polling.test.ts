@@ -142,7 +142,7 @@ const track = async (
                       (SELECT enabled_at FROM subscription_types WHERE content_type = 'Issue')))`,
     [
       nodeId,
-      row.checkedAgo ?? "5 minutes",
+      row.checkedAgo ?? "7 minutes",
       row.eventAgo ?? "1 hour",
       row.watermarkAt ?? null,
     ],
@@ -157,7 +157,7 @@ const track = async (
 /** Makes every item due again, as `D` passing would. */
 const makeDue = () =>
   db.query(
-    "UPDATE tracked_content SET last_checked_at = now() - interval '5 minutes'",
+    "UPDATE tracked_content SET last_checked_at = now() - interval '7 minutes'",
   );
 
 const respond = <T>(data: T, errors: Array<GraphQLError> = []) =>
@@ -509,8 +509,8 @@ describe("runPoll", () => {
   it("probes only items not checked for D, the top probeBatch by score", async () => {
     const session = await setUp();
     await track("I_recent", { checkedAgo: "3 minutes", eventAgo: "1 minute" });
-    await track("I_hot", { checkedAgo: "5 minutes", eventAgo: "1 minute" });
-    await track("I_cold", { checkedAgo: "5 minutes", eventAgo: "1 year" });
+    await track("I_hot", { checkedAgo: "7 minutes", eventAgo: "1 minute" });
+    await track("I_cold", { checkedAgo: "7 minutes", eventAgo: "1 year" });
     await track("I_waiting", { checkedAgo: "10 days", eventAgo: "1 year" });
     const probe = probing([newestAt(null), newestAt(null)]);
 

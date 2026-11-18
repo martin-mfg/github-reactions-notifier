@@ -144,15 +144,15 @@ describe("chooseSyncTask", () => {
     await discovered("10 minutes", "1 day");
     expect(await choose()).toMatchObject({ kind: "discovery", categoryId });
 
-    // ≈ 0.0003: an old item does not beat discovery
-    await track("I_cold", "5 minutes", "1 year");
+    // ≈ 0.0004: an old item does not beat discovery
+    await track("I_cold", "7 minutes", "1 year");
     expect(await choose()).toMatchObject({ kind: "discovery" });
 
-    // ≈ 11.4: a hot item does
-    await track("I_hot", "5 minutes", "1 minute");
+    // ≈ 15.9: a hot item does
+    await track("I_hot", "7 minutes", "1 minute");
     const poll = await choose();
     expect(poll).toMatchObject({ kind: "poll" });
-    expect(poll.kind === "poll" && poll.score).toBeCloseTo(11.4, 0);
+    expect(poll.kind === "poll" && poll.score).toBeCloseTo(15.9, 0);
 
     await db.query(
       `INSERT INTO thread_scans (category_id, thread_node_id, since_at, thread_created_at,
@@ -196,13 +196,13 @@ describe("chooseSyncTask", () => {
     expect(task.kind).toBe("idle");
     expect(
       task.kind === "idle" && (task.until.getTime() - Date.now()) / 1000,
-    ).toBeCloseTo(180, -1);
+    ).toBeCloseTo(300, -1);
 
     await track("I_1", "3 minutes", "1 minute");
     task = await choose();
     expect(
       task.kind === "idle" && (task.until.getTime() - Date.now()) / 1000,
-    ).toBeCloseTo(60, -1);
+    ).toBeCloseTo(180, -1);
   });
 });
 
@@ -291,7 +291,7 @@ describe("chooseSyncTask: the snapshot sweep (M1.1 §4.1)", () => {
     const later = await choose();
     expect(
       later.kind === "idle" && (later.until.getTime() - Date.now()) / 1000,
-    ).toBeCloseTo(180, -1);
+    ).toBeCloseTo(300, -1);
   });
 });
 
@@ -350,7 +350,7 @@ describe("chooseSyncTask: summary mode (M1.2 §4.1)", () => {
        VALUES ('U_alice', 'I_snap', now() + interval '1 hour')`,
     );
 
-    // in notify mode, the item's poll (in 2 minutes) would wake the job first
+    // in notify mode, the item's poll (in 5 minutes) would wake the job first
     const task = await choose();
     expect(task.kind).toBe("idle");
     expect(
@@ -428,7 +428,7 @@ describe("runSyncTask", () => {
        FROM jobs WHERE kind = 'sync'`,
     );
     expect(rows[0]?.locked_by).toBeNull();
-    expect(rows[0]?.due_in).toBeCloseTo(60, -1);
+    expect(rows[0]?.due_in).toBeCloseTo(180, -1);
   });
   describe("one log line per task", () => {
     const linesLogged = () =>
