@@ -1,13 +1,10 @@
 # The `authored` source's backfill for category `issue` (requirements §9.2): one page of a
 # window's `involves:` search, newest-first. Each hit brings its first page of comments and
 # its newest reaction. `$query` holds the login and the window.
-# Shadow testing: `viewer` is the subscribed user, looked up by `$userId`, not the token's owner.
-query authoredBackfill($query: String!, $userId: ID!) {
-  viewer: node(id: $userId) {
-    ... on User {
-      id
-      login
-    }
+query authoredBackfill($query: String!) {
+  viewer {
+    id
+    login
   }
   search(type: ISSUE, query: $query, first: 100) {
     pageInfo {

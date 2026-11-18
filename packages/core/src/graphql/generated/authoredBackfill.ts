@@ -5,11 +5,10 @@ type Exact<T extends { [key: string]: unknown }> = { [K in keyof T]: T[K] };
 import { graphqlDocument } from "../graphqlDocument.js";
 export type AuthoredBackfillQueryVariables = Exact<{
   query: string;
-  userId: string | number;
 }>;
 
 export type AuthoredBackfillQuery = {
-  viewer: { id: string; login: string } | Record<PropertyKey, never> | null;
+  viewer: { id: string; login: string };
   search: {
     pageInfo: { hasNextPage: boolean };
     nodes: Array<
@@ -116,12 +115,10 @@ export const AuthoredBackfillDocument = graphqlDocument<
   AuthoredBackfillQuery,
   AuthoredBackfillQueryVariables
 >(`
-query authoredBackfill($query: String!, $userId: ID!) {
-  viewer: node(id: $userId) {
-    ... on User {
-      id
-      login
-    }
+query authoredBackfill($query: String!) {
+  viewer {
+    id
+    login
   }
   search(type: ISSUE, query: $query, first: 100) {
     pageInfo {

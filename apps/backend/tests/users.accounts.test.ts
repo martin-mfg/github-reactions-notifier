@@ -172,8 +172,7 @@ describe("signIn", () => {
     expect(jobs.map((job) => job.kind)).toEqual(["deliver", "sync"]);
     const opening = jobs[0];
     expect(opening?.payload?.title).toContain("alice");
-    expect(opening?.payload?.body).toContain("@martin-mfg");
-    expect(opening?.payload?.body).not.toContain("@alice");
+    expect(opening?.payload?.body).toContain("@alice");
     expect(opening?.payload?.body).toContain(siteUrl);
     expect(opening?.payload?.body).toContain(
       `<!-- grn:${String(opening?.id)} -->`,

@@ -1,9 +1,6 @@
 import { NOTIFY_BUTTON, SUMMARY_BUTTON } from "../users/mode.ts";
 import type { UserMode } from "../users/mode.ts";
 
-/** Shadow testing: the account the inbox opening mentions, in place of the inbox's user. */
-const SHADOW_OPERATOR = "martin-mfg";
-
 /** A rendered inbox opening: the payload of its `deliver` job (§13). */
 export interface OpeningPayload {
   title: string;
@@ -48,12 +45,10 @@ export const renderOpening = (
           `To stop notifications, choose "${SUMMARY_BUTTON}" at ${siteUrl}. To resume, ` +
             `choose "${NOTIFY_BUTTON}" there. To delete your data, delete your account there.`,
         ];
-  // Shadow testing: the operator is subscribed, never the scanned account, which is named only
-  // in plain text. The rest of the text is the production wording, for comparison.
   return {
-    title: `Test inbox of ${login}`,
+    title: `Reactions inbox of ${login}`,
     body: [
-      `Hi @${SHADOW_OPERATOR}, this is the test GitHub-Reactions-Notifier inbox of \`${login}\`.`,
+      `Hi @${login}, this is your GitHub-Reactions-Notifier inbox.`,
       "",
       ...text,
       "",

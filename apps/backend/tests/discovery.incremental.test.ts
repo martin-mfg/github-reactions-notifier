@@ -19,7 +19,6 @@ import {
 import { defaultConfig } from "../src/config.ts";
 import type { Database } from "../src/db.ts";
 import { runIncrementalDiscovery } from "../src/discovery/incremental.ts";
-import type { Subject } from "../src/discovery/results.ts";
 import type { SyncSession } from "../src/github/syncClient.ts";
 import { LeaseLostError, claimJob } from "../src/jobs/queue.ts";
 import { signIn } from "../src/users/accounts.ts";
@@ -32,9 +31,7 @@ type Fetcher = GraphQLFetcherFunction<
   AuthoredDiscoveryQueryVariables
 >;
 type FetcherResponse = Awaited<ReturnType<Fetcher>>;
-type Viewer = Subject<AuthoredDiscoveryQuery["viewer"]>;
-/** A response whose `viewer` is the User, as the fixtures build it. */
-type Discovery = AuthoredDiscoveryQuery & { viewer: Viewer };
+type Viewer = AuthoredDiscoveryQuery["viewer"];
 
 let testDb: TestDatabase;
 let db: Database;
@@ -156,7 +153,7 @@ interface Pages {
   viewerId?: string;
 }
 
-const discovery = (pages: Pages = {}): Discovery => ({
+const discovery = (pages: Pages = {}): AuthoredDiscoveryQuery => ({
   viewer: {
     id: pages.viewerId ?? ALICE.id,
     login: pages.login ?? ALICE.login,
@@ -237,37 +234,33 @@ const ageCategory = async () => {
 
 describe("runIncrementalDiscovery", () => {
   it.each([
-    ["empty data", (data: Discovery) => Reflect.deleteProperty(data, "viewer")],
     [
-      "an id that names no node",
-      (data: Discovery) => Reflect.set(data, "viewer", null),
-    ],
-    [
-      "an id that names no User",
-      (data: Discovery) => Reflect.set(data, "viewer", {}),
+      "empty data",
+      (data: AuthoredDiscoveryQuery) => Reflect.deleteProperty(data, "viewer"),
     ],
     [
       "missing connection",
-      (data: Discovery) => Reflect.deleteProperty(data.viewer, "issues"),
+      (data: AuthoredDiscoveryQuery) =>
+        Reflect.deleteProperty(data.viewer, "issues"),
     ],
     [
       "missing nodes",
-      (data: Discovery) =>
+      (data: AuthoredDiscoveryQuery) =>
         Reflect.deleteProperty(data.viewer.issueComments, "nodes"),
     ],
     [
       "missing pageInfo",
-      (data: Discovery) =>
+      (data: AuthoredDiscoveryQuery) =>
         Reflect.deleteProperty(data.viewer.pullRequests, "pageInfo"),
     ],
     [
       "malformed item",
-      (data: Discovery) =>
+      (data: AuthoredDiscoveryQuery) =>
         Reflect.set(data.viewer.issues, "nodes", [{ __typename: "Issue" }]),
     ],
     [
       "missing sort key",
-      (data: Discovery) =>
+      (data: AuthoredDiscoveryQuery) =>
         Reflect.set(data.viewer.issueComments, "nodes", [
           { ...comment("C_1", at(1)), updatedAt: undefined },
         ]),
@@ -284,7 +277,7 @@ describe("runIncrementalDiscovery", () => {
       if (!data) {
         throw new Error("test response has no data");
       }
-      corrupt(data as Discovery);
+      corrupt(data);
       if (_name === "empty data") {
         Reflect.deleteProperty(data, "rateLimit");
       }
@@ -494,15 +487,6 @@ describe("runIncrementalDiscovery", () => {
       Issue: new Date(at(20)).toISOString(),
       PullRequest: new Date(at(10)).toISOString(),
     });
-  });
-
-  it("looks the user up by id, not as the token's viewer (shadow testing)", async () => {
-    const { session, categoryId } = await setUp();
-    const fetcher = resolving();
-
-    await runIncrementalDiscovery(session, categoryId, fetcher);
-
-    expect(fetcher.mock.calls[0]?.[0]).toEqual({ userId: "U_alice" });
   });
 
   it("refreshes the user's login from viewer", async () => {

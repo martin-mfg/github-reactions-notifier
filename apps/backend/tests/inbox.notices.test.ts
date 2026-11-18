@@ -206,7 +206,7 @@ describe("M1.2 texts", () => {
   it("renders the notify-mode opening with the stop hint", () => {
     const { title, body } = renderOpening("alice", "job-3", site, "notify");
 
-    expect(title).toBe("Test inbox of alice");
+    expect(title).toBe("Reactions inbox of alice");
     expect(body).toContain(
       `To stop notifications, choose "Just send me a one-time summary" at ${site}. To ` +
         'resume, choose "Get notified about reactions" there. To delete your data, delete ' +
@@ -218,7 +218,7 @@ describe("M1.2 texts", () => {
   it("renders the summary-mode opening", () => {
     expect(renderOpening("alice", "job-3", site, "summary").body).toBe(
       [
-        "Hi @martin-mfg, this is the test GitHub-Reactions-Notifier inbox of `alice`.",
+        "Hi @alice, this is your GitHub-Reactions-Notifier inbox.",
         "",
         "Your sign-in to GitHub-Reactions-Notifier requested this issue. You asked for a " +
           "one-time summary of the reactions to your issues, pull requests and comments. It " +
@@ -232,7 +232,7 @@ describe("M1.2 texts", () => {
     );
   });
 
-  it("mentions nobody but the shadow operator, in the opening only", () => {
+  it("mentions nobody but the user, in the opening only", () => {
     for (const body of [
       renderReactionSummary("job-1", summary(), summaryMode).body,
       renderRevokedNotice("job-2", site, "summary").body,
@@ -244,8 +244,7 @@ describe("M1.2 texts", () => {
     for (const mode of ["notify", "summary"] as const) {
       const { body } = renderOpening("alice", "job-3", site, mode);
       expect(body.match(/@/g)).toEqual(["@"]);
-      expect(body).toMatch(/^Hi @martin-mfg,/);
-      expect(body).not.toMatch(/@alice/);
+      expect(body).toMatch(/^Hi @alice,/);
       expect(body).not.toMatch(/#\d/);
     }
   });
