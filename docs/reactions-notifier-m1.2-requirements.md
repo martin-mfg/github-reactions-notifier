@@ -79,7 +79,7 @@ The home page offers two buttons, both of which run the OAuth flow:
 
 - **"Get notified about reactions"**: the existing `/api/login`, action `signin`, target mode
   `notify`.
-- **"Just send me a one-time summary"**: `/api/login?mode=summary`, new action `summary`, target
+- **"Get a one-time summary"**: `/api/login?mode=summary`, new action `summary`, target
   mode `summary`.
 
 The action travels in the OAuth `state`, as `signin` and `delete` do today (`STATE_PATTERN` in
@@ -91,7 +91,7 @@ Every sign-in, whatever its action, still stores the new token and login and set
 "Complete" below means the user's subscription is complete (M1.1 §3), i.e. its summary has been
 queued.
 
-| Current state | "Just send me a one-time summary" | "Get notified about reactions" |
+| Current state | "Get a one-time summary" | "Get notified about reactions" |
 |---|---|---|
 | **New user** | Signup with `mode = 'summary'`. Status `summary-requested` | Signup as today. Status `signed-in` |
 | **`summary`, not complete** | No change. Status `summary-pending` | **Turn notifications on** (§6). Status `notifications-on-summary-pending` |
@@ -228,7 +228,7 @@ the snapshots. Every "turn off" stops polling.
 
 ### 6.1 A fresh summary without notifications (`summary`, complete → `summary`)
 
-A summary-mode user whose summary was queued chooses "Just send me a one-time summary" again. In
+A summary-mode user whose summary was queued chooses "Get a one-time summary" again. In
 the sign-in transaction, run **only the rescan** (§6, steps 3, 5 and 6): reset the window,
 reset the snapshots, and recreate the `sync` job.
 
@@ -311,7 +311,7 @@ Rendered once, in the mode of the first sign-in.
 - **Notify mode:** today's text, plus a pause hint. Replace the line
   "To stop, delete your account at {site}." with:
 
-  > To stop notifications, choose "Just send me a one-time summary" at {site}. To resume,
+  > To stop notifications, choose "Get a one-time summary" at {site}. To resume,
   > choose "Get notified about reactions" there. To delete your data, delete your account there.
 
 - **Summary mode:**
@@ -334,7 +334,7 @@ The summary is rendered when it is queued, in the user's mode at that moment.
 
   > That's it: you asked for a one-time summary, so GitHub-Reactions-Notifier won't post here
   > again unless you ask.
-  > For a fresh summary, choose "Just send me a one-time summary" again at {site}. To get
+  > For a fresh summary, choose "Get a one-time summary" again at {site}. To get
   > notified about new reactions, choose "Get notified about reactions" there.
 
 The site URL comes from where FR-17's notice gets it.
@@ -344,7 +344,7 @@ The site URL comes from where FR-17's notice gets it.
 > GitHub-Reactions-Notifier can no longer read your content: its access to your GitHub account
 > was revoked or has expired. Scanning has stopped, so your summary can't be completed.
 >
-> To resume, choose "Just send me a one-time summary" again at {site}.
+> To resume, choose "Get a one-time summary" again at {site}.
 
 ### 8.4 Status messages (`StatusMessage.tsx`)
 
@@ -373,7 +373,7 @@ Two buttons instead of one sign-in link, with one sentence each:
 
 - "Get notified about reactions": a summary of your existing reactions, then a notification for
   every new one.
-- "Just send me a one-time summary": a summary of your existing reactions, nothing after that.
+- "Get a one-time summary": a summary of your existing reactions, nothing after that.
   You can turn notifications on later.
 
 ## 9. Tests (minimum)

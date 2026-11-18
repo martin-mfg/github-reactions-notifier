@@ -178,7 +178,7 @@ describe("M1.2 texts", () => {
     ]) {
       expect(body).toContain(
         "That's it: you asked for a one-time summary, so GitHub-Reactions-Notifier won't post " +
-          'here again unless you ask. For a fresh summary, choose "Just send me a one-time summary" again at ' +
+          'here again unless you ask. For a fresh summary, choose "Get a one-time summary" again at ' +
           `${site}. To get notified about new reactions, choose "Get notified about ` +
           'reactions" there.\n\n<!-- grn:job-1 -->',
       );
@@ -193,7 +193,7 @@ describe("M1.2 texts", () => {
           "GitHub account was revoked or has expired. Scanning has stopped, so your summary " +
           "can't be completed.",
         "",
-        `To resume, choose "Just send me a one-time summary" again at ${site}.`,
+        `To resume, choose "Get a one-time summary" again at ${site}.`,
         "",
         "<!-- grn:job-2 -->",
       ].join("\n"),
@@ -208,7 +208,7 @@ describe("M1.2 texts", () => {
 
     expect(title).toBe("Reactions inbox of alice");
     expect(body).toContain(
-      `To stop notifications, choose "Just send me a one-time summary" at ${site}. To ` +
+      `To stop notifications, choose "Get a one-time summary" at ${site}. To ` +
         'resume, choose "Get notified about reactions" there. To delete your data, delete ' +
         "your account there.",
     );

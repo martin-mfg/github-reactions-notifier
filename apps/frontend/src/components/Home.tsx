@@ -13,10 +13,6 @@ export function Home({ children }: HomeProps) {
     <section className="home-columns">
       <div className="home-main">
         <p>
-          Get a GitHub notification for new reactions to your issues, PRs or
-          comments; and a summary of all past ones.
-        </p>
-        <p>
           GitHub notifies you about comments, mentions and reviews, but never
           about reactions. When someone adds 👍, ❤️ or 🎉 to your issue, you
           only find out by accident. GitHub Reactions Notifier fills this gap.
@@ -47,7 +43,7 @@ export function Home({ children }: HomeProps) {
           <form className="home-option" method="get" action="api/login">
             <input type="hidden" name="mode" value="summary" />
             <button className="home-button-secondary" type="submit">
-              Just send me a one-time summary
+              Get a one-time summary
             </button>
             <p>
               A summary of your existing reactions, nothing after that. You can

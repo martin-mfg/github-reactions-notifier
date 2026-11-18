@@ -28,7 +28,7 @@ interface SignInOptions {
   siteUrl: string;
   /**
    * The mode the button the user chose asks for (M1.2 §3): `notify` for "Get notified about
-   * reactions", `summary` for "Just send me a one-time summary".
+   * reactions", `summary` for "Get a one-time summary".
    */
   mode?: UserMode;
   config?: Config;

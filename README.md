@@ -83,13 +83,13 @@ Missing something you need? [Tell me](#feedback).
 
 ## Only want the summary?
 
-Choose **"Just send me a one-time summary"** on the website instead of "Get notified about
+Choose **"Get a one-time summary"** on the website instead of "Get notified about
 reactions". The app scans your history, posts the summary to your inbox issue, and then stops:
 it makes no further requests for you and posts nothing else.
 
 You can switch at any time with the same two buttons:
 
-- **"Just send me a one-time summary"** stops notifications. If you click it
+- **"Get a one-time summary"** stops notifications. If you click it
   again after your summary arrived, the app rescans your history and posts a fresh summary.
 - **"Get notified about reactions"** turns notifications back on. The app rescans your history
   and posts a fresh summary, then notifies you about new reactions again.

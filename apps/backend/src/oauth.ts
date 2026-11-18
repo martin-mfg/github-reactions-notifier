@@ -6,7 +6,7 @@
  *
  * A random `state`, mirrored in a short-lived cookie, ties the callback to a flow this browser
  * started, and names the flow's action and its FR-2a attempt. The actions are `signin` ("Get
- * notified about reactions"), `summary` ("Just send me a one-time summary", M1.2 §3) and
+ * notified about reactions"), `summary` ("Get a one-time summary", M1.2 §3) and
  * `delete`.
  */
 
@@ -173,7 +173,7 @@ export const createOAuthHandlers = (
     );
   };
 
-  /** `?mode=summary` is "Just send me a one-time summary"; anything else signs in to notify. */
+  /** `?mode=summary` is "Get a one-time summary"; anything else signs in to notify. */
   const login: ApiHandler = (req, res) => {
     startFlow(res, req.query["mode"] === "summary" ? "summary" : "signin", 0);
   };

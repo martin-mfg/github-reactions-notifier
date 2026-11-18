@@ -8,4 +8,4 @@ export type UserMode = "notify" | "summary";
 
 /** The two buttons' labels, as the site and the inbox texts name them (M1.2 §8). */
 export const NOTIFY_BUTTON = "Get notified about reactions";
-export const SUMMARY_BUTTON = "Just send me a one-time summary";
+export const SUMMARY_BUTTON = "Get a one-time summary";

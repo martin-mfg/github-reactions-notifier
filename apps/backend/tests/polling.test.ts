@@ -714,7 +714,7 @@ describe("runPoll across a mode switch (M1.2 §4.4, §6)", () => {
     const session = await setUp();
     await track("I_1");
     const reactions = page([reaction(ago(10), bob)]);
-    // "Just send me a one-time summary" while the drill-down runs; the backfill isn't
+    // "Get a one-time summary" while the drill-down runs; the backfill isn't
     // finished, so the sync job is kept
     const drillDown = vi.fn<DrillDownFetcher>(async () => {
       expect((await switchTo("summary")).status).toBe(
