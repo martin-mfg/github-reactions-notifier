@@ -139,16 +139,6 @@ describe("server", () => {
     expect(await res.json()).toStrictEqual({ up: false });
   });
 
-  it("routes /api/cron to its handler, which refuses without CRON_SECRET", async () => {
-    vi.spyOn(logger, "error").mockImplementation(() => undefined);
-    vi.stubEnv("CRON_SECRET", "");
-
-    const res = await fetch(`${baseUrl}/api/cron`);
-    vi.unstubAllEnvs();
-
-    expect(res.status).toBe(500);
-  });
-
   it("responds 404 for unknown API paths", async () => {
     const res = await fetch(`${baseUrl}/api/unknown`);
 

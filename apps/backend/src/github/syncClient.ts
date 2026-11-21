@@ -43,9 +43,9 @@ interface RequestLog {
 
 /**
  * Collects a sync job's one log line (NFR-7): the task's summary, its score and its requests,
- * written by {@link writeTaskLog} once the job ends. `[WHY]` Vercel caps the log lines of a
- * request (256), and a cron run works many jobs, so each logs one line instead of one per
- * step. Problems are still logged on their own.
+ * written by {@link writeTaskLog} once the job ends. `[WHY]` A cron run works many jobs, so
+ * each logs one line instead of one per step, keeping the logs readable. Problems are still
+ * logged on their own.
  */
 export interface TaskLog {
   /** The line's message: the task's name once it logged its summary, else `sync task`. */

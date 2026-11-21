@@ -195,9 +195,11 @@ right:
 
 ## 5. Non-functional requirements (M1 subset)
 
-- **NFR-1** Vercel **Pro** and Postgres, with no always-on cluster. `[WHY]` Hobby cron runs
-  only once per day; Pro allows once per minute. Vercel runs the app as a Docker image built
-  from `Dockerfile.vercel`.
+- **NFR-1** Fly.io and Postgres, with no always-on cluster: one always-on machine runs the
+  web app and the scheduler. Fly watches the repository and builds and deploys the Docker
+  image from `Dockerfile` on each push. `[WHY]` The project first ran on Vercel
+  Pro, whose cron could start the workers only through an HTTP request every minute, with
+  each invocation capped at 800 s. A long-lived process schedules its own runs.
 - **NFR-2** Never exhaust a user's GitHub rate limit. One global budget policy (§8).
 - **NFR-3** Tokens are encrypted at rest as in github-stats-extended PR #536: AES-256-GCM, a
   32-byte key from `TOKEN_ENCRYPTION_KEY` (hex or base64), `user_id` (= `gh_user_id`) as AAD,
@@ -218,8 +220,8 @@ right:
   rescues, missing items, login mismatches, and the offset of GitHub's `Date` header (alarm
   above 2 s).
 - **NFR-8** Use the same toolchain as github-stats-extended: pnpm workspaces, turbo,
-  TypeScript, vitest, eslint/prettier/knip, an Astro + React web app (Starlight docs), Vercel,
-  and Postgres.
+  TypeScript, vitest, eslint/prettier/knip, an Astro + React web app (Starlight docs), and
+  Postgres. Unlike github-stats-extended, GRN is hosted on Fly.io.
 
 ---
 
@@ -259,23 +261,24 @@ right:
 ## 7. Runtime architecture (§6.1, §6.2)
 
 Components: a **web app** (OAuth, sign-in page, account deletion, health endpoint), a
-**scheduler** (Vercel Cron), **workers** (sync and deliver), a **token service**, and
-**Postgres** for both state and the job queue. Workers are plain Node code driven by
-`SELECT … FOR UPDATE SKIP LOCKED`, so they run unchanged as Vercel functions or in a
-container.
+**scheduler** (in-process, in the web app's server), **workers** (sync and deliver), a
+**token service**, and **Postgres** for both state and the job queue. Workers are plain Node
+code driven by `SELECT … FOR UPDATE SKIP LOCKED`, so any number of processes can run them.
 
 ### 7.1 Scheduler
-- Vercel Cron runs **every minute**. It (a) starts worker invocations and (b) reaps expired
-  leases. It makes **no GitHub calls** and enqueues nothing.
-- How many worker invocations each cron run starts: make it configurable, start with 1.
-- Functions run for up to 800 s (`maxDuration`). A worker invocation loops: claim a job, run
+- The server starts a **cron run every minute** (`cronIntervalSeconds`). A run (a) runs
+  worker loops and (b) reaps expired leases. It makes **no GitHub calls** and enqueues
+  nothing. Runs overlap: a new one starts whether or not earlier ones have ended.
+- How many worker loops each cron run starts: make it configurable, start with 1.
+- A cron run lasts up to 800 s (`maxDuration`, kept from Vercel's function limit). A worker
+  loops: claim a job, run
   **one task** (§9.1) or one `deliver` job, release it, and repeat. When nothing is due, it
   **exits**, unless a pending `deliver` job becomes due within `DELIVER_WAIT`: then it waits
   for that without holding a lease, and claims again. Make `DELIVER_WAIT` configurable, start
   with 15 s. The worker claims no job within two request timeouts (4 min) of `maxDuration`,
   and exits instead of waiting past that point.
-  `[WHY]` Vercel bills an invocation's provisioned memory for as long as it runs, idle or not.
-  Workers that waited out `maxDuration` kept about 10 invocations alive around the clock. Now
+  `[WHY]` An idle worker would only poll the database. Workers that waited out `maxDuration`
+  kept about 10 loops alive around the clock (on Vercel, each a billed invocation). Now
   that many run only while work keeps coming, and none while the queue is idle. Whatever falls
   due later waits at most for the next cron run, a minute.
   `[WHY]` A task makes at most two requests: a poll's probe and drill-down, or a delivery's
@@ -1164,30 +1167,26 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
     *Accept:* the end-to-end run opens the inbox, notifies a new reaction exactly once and no
     pre-existing one, and the health endpoint responds. Then take §15's measurements.
     *Status:* done, except the end-to-end run and §15's measurements, which were deferred.
-    The scheduler is `/api/cron` (`apps/backend/src/cron.ts`), scheduled every minute in the
-    root `vercel.json`. The worker loop is `runWorker` in `apps/backend/src/worker/worker.ts`.
+    The scheduler is `startScheduler` in `apps/backend/src/cron.ts`, started by the server
+    (`apps/backend/express.ts`). It replaced `/api/cron`, which Vercel Cron called every
+    minute (see "Moved to Fly.io" below). The worker loop is `runWorker` in `apps/backend/src/worker/worker.ts`.
     The clock-offset check is `checkClockOffset` in `apps/backend/src/github/clock.ts`. The
     health endpoint is `apps/backend/api/status/up.ts`. The new tunables are `workersPerCron`
     (1), `deliverWaitSeconds` (15, replacing `idleWaitSeconds`), `maxDurationSeconds` (800-10=790), and `clockOffsetAlarmSeconds` (2).
     Decided in step 10:
-    - The cron run hosts its workers: it reaps, then runs `workersPerCron` worker loops in its
-      own invocation and answers once they all exit. It makes no request to GRN's own origin.
-      `[WHY]` Vercel may pause an instance once it has responded, so work after the response is
-      unsafe. Cron invocations overlap, so this still keeps about 10 workers alive. Vercel's
-      cron is best-effort (it may skip or repeat a run and never retries one); leases and the
-      reaper make both harmless.
-    - `/api/cron` fails closed. Without `CRON_SECRET` it answers `500`. A request whose
-      `Authorization` header is not `Bearer <CRON_SECRET>` gets `401` (constant-time compare).
+    - The cron run hosts its workers: it reaps, then runs `workersPerCron` worker loops and
+      ends once they all exit. It makes no request to GRN's own origin. Cron runs overlap, so
+      this still keeps about 10 workers alive under load.
       A failed reap is logged, and the workers still run.
     - The worker's two claims take turns going first, starting with `deliver`: after running
       one kind, it tries the other kind first. A claim of either kind that finds nothing falls
       through to the other.
     - The worker stops claiming at `maxDurationSeconds` − 2 × `requestTimeoutSeconds` (550 s)
-      after the invocation started. It skips any idle wait that would end past that point, and
+      after the cron run started. It skips any idle wait that would end past that point, and
       exits instead.
     - A job that throws keeps its lease. The worker logs an error and goes on; the reaper
       retries it and alerts on repeats (§7.3). A lost lease is logged as a warning. A failed
-      claim ends the invocation. The worker never throws.
+      claim ends the worker's loop. The worker never throws.
     - A `sync` job whose token can't be decrypted is released. `loadToken` has already set the
       token `invalid`, so the job is no longer due.
     - Each worker logs its per-stage counters once, as `worker finished`: claims per kind, sync
@@ -1218,9 +1217,17 @@ Each step should end with its acceptance tests passing. Keep the tests basic in 
       formats as github-stats-extended, with `Cache-Control: no-store`. Unlike
       github-stats-extended, it answers `503` while down, so monitors need no keyword match.
       The `shields` format still answers `200`, since shields.io renders only a `200`'s badge.
-    - Not yet verified on Vercel; check these in the end-to-end run:
-      - how to set `maxDuration` to 800 s for a container-runtime project (README: Project
-        Settings → Functions);
-      - whether Vercel Cron triggers a container-runtime project;
-      - how a scale-in or redeploy ends a running cron invocation. The reaper covers any job
-        cut off mid-task.
+    - Moved to Fly.io, replacing Vercel:
+      - The server runs the scheduler in-process: a cron run at start, then every
+        `cronIntervalSeconds` (60). `/api/cron`, `CRON_SECRET` and `vercel.json` are gone.
+      - Without `POSTGRES_URL` or a worker setting, the server logs a warning and serves the
+        site without the scheduler, as in local development and the Docker smoke test.
+      - On `SIGINT` or `SIGTERM` (a redeploy or scale-in), the workers finish their current
+        job and claim no more, and any idle wait ends at once. The server exits once they
+        all exit, or after `requestTimeoutSeconds` + 30 s (150 s); `fly.toml`'s
+        `kill_timeout` is above that. The reaper covers any job cut off mid-task.
+      - A blue-green deploy briefly runs two machines, each with its own scheduler. Leases
+        and the deliver lease make that harmless.
+      - Fly's GitHub integration builds `Dockerfile` (named in `fly.toml`) and deploys it on
+        each push, so CI holds no Fly token. The release workflow still publishes the image
+        to GHCR for anyone self-hosting.

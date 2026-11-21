@@ -1,18 +1,13 @@
 /**
- * @file The scheduler (§7.1). Vercel Cron calls `/api/cron` every minute with
- * `Authorization: Bearer $CRON_SECRET`. Each run reaps expired leases, logs the queue's
- * status, then runs
- * `workersPerCron` worker loops in this invocation and answers once they all exit: as soon as
- * nothing is due, or shortly before `maxDuration` while work keeps coming. So overlapping runs
- * keep up to about ten workers alive under load, and none while idle. It makes no GitHub
- * calls itself and enqueues nothing.
+ * @file The scheduler (§7.1). The server process starts a cron run every
+ * `cronIntervalSeconds`. Each run reaps expired leases, logs the queue's status, then runs
+ * `workersPerCron` worker loops and ends once they all exit: as soon as nothing is due, or
+ * shortly before `maxDuration` while work keeps coming. So overlapping runs keep up to about
+ * ten workers alive under load, and none while idle. It makes no GitHub calls itself and
+ * enqueues nothing.
  */
 
-import { timingSafeEqual } from "node:crypto";
-
 import { AccessTokenCipher, logger, pool } from "@grn/core";
-
-import type { ApiHandler, ApiRequest } from "../api/_types.ts";
 
 import { defaultConfig } from "./config.ts";
 import type { Config } from "./config.ts";
@@ -26,27 +21,26 @@ import {
 import { runWorker } from "./worker/worker.ts";
 import type { WorkerDeps, WorkerStats } from "./worker/worker.ts";
 
-/** Everything the scheduler needs from outside. */
+/** What the workers need from the environment. */
+export type WorkerEnv = Pick<WorkerDeps, "cipher" | "machine" | "siteUrl">;
+
+/** Everything a cron run needs from outside. */
 export interface CronDeps {
-  db: () => Database | null;
-  /** `CRON_SECRET`; without it, every call is refused. */
-  secret: () => string | undefined;
-  /** What the workers need from the environment. */
-  workerEnv: () => Pick<WorkerDeps, "cipher" | "machine" | "siteUrl">;
+  db: Database;
+  workerEnv: WorkerEnv;
   runWorker?: (deps: WorkerDeps) => Promise<WorkerStats>;
   config?: Config;
   now?: () => number;
+  /** Aborted on shutdown: the workers claim no more jobs. */
+  signal?: AbortSignal;
 }
 
-const isAuthorized = (req: ApiRequest, secret: string): boolean => {
-  const header = req.headers?.["authorization"];
-  if (typeof header !== "string") {
-    return false;
-  }
-  const given = Buffer.from(header);
-  const expected = Buffer.from(`Bearer ${secret}`);
-  return given.length === expected.length && timingSafeEqual(given, expected);
-};
+/** What a cron run did. */
+export interface CronResult {
+  /** Expired leases it released. */
+  rescued: number;
+  workers: Array<WorkerStats>;
+}
 
 /**
  * Logs, once per cron run, what the claims skip silently: the dispatch bucket's level (§12)
@@ -69,82 +63,136 @@ const logQueueStatus = async (db: Database, config: Config): Promise<void> => {
 };
 
 /**
- * @param deps The scheduler's dependencies.
- * @returns The `/api/cron` handler.
+ * One cron run: reaps expired leases, logs the queue's status, then runs `workersPerCron`
+ * worker loops and resolves once they all exit. A failed reap is logged, and the workers
+ * still run. It never throws.
+ *
+ * @param deps The run's dependencies.
+ * @returns What the run did.
  */
-export const createCronHandler =
-  (deps: CronDeps): ApiHandler =>
-  async (req, res) => {
-    const config = deps.config ?? defaultConfig;
-    const startedAt = (deps.now ?? Date.now)();
-    res.setHeader("Cache-Control", "no-store");
+export const runCron = async (deps: CronDeps): Promise<CronResult> => {
+  const config = deps.config ?? defaultConfig;
+  const startedAt = (deps.now ?? Date.now)();
+  const { db } = deps;
 
-    const secret = deps.secret();
-    if (!secret) {
-      logger.error("cron: CRON_SECRET is not set, refusing");
-      res.statusCode = 500;
-      res.send("Not configured");
-      return;
-    }
-    if (!isAuthorized(req, secret)) {
-      res.statusCode = 401;
-      res.send("Unauthorized");
-      return;
-    }
+  let rescued = 0;
+  try {
+    rescued = (await reapExpiredLeases(db, config)).length;
+  } catch (error) {
+    logger.error("cron: reaping failed", { error });
+  }
+  await logQueueStatus(db, config);
 
-    const db = deps.db();
-    let workerEnv: ReturnType<CronDeps["workerEnv"]>;
-    try {
-      if (!db) {
-        throw new Error("POSTGRES_URL is not set");
-      }
-      workerEnv = deps.workerEnv();
-    } catch (error) {
-      logger.error("cron: not configured", { error });
-      res.statusCode = 500;
-      res.send("Not configured");
-      return;
-    }
+  const run = deps.runWorker ?? runWorker;
+  const workers = await Promise.all(
+    Array.from({ length: config.workersPerCron }, () =>
+      run({
+        ...deps.workerEnv,
+        db,
+        startedAt,
+        ...(deps.now && { now: deps.now }),
+        ...(deps.config && { config: deps.config }),
+        ...(deps.signal && { signal: deps.signal }),
+      }),
+    ),
+  );
+  return { rescued, workers };
+};
 
-    let rescued = 0;
-    try {
-      rescued = (await reapExpiredLeases(db, config)).length;
-    } catch (error) {
-      logger.error("cron: reaping failed", { error });
-    }
-    await logQueueStatus(db, config);
+/** Everything the scheduler needs from outside. */
+export interface SchedulerDeps extends Omit<CronDeps, "signal"> {
+  /** Runs one cron run; replaced in tests. */
+  runCron?: (deps: CronDeps) => Promise<CronResult>;
+}
 
-    const run = deps.runWorker ?? runWorker;
-    const workers = await Promise.all(
-      Array.from({ length: config.workersPerCron }, () =>
-        run({
-          ...workerEnv,
-          db,
-          startedAt,
-          ...(deps.now && { now: deps.now }),
-          ...(deps.config && { config: deps.config }),
-        }),
-      ),
-    );
+/** A started scheduler. */
+export interface Scheduler {
+  /**
+   * Starts no more cron runs, has the running ones' workers claim no more jobs, and resolves
+   * once they all exit.
+   */
+  stop: () => Promise<void>;
+}
 
-    res.setHeader("Content-Type", "application/json");
-    res.send({ rescued, workers });
+/**
+ * Starts a cron run now and every `cronIntervalSeconds`. Runs overlap: a new one starts
+ * whether or not earlier ones have ended.
+ *
+ * @param deps The scheduler's dependencies.
+ * @returns The scheduler, to stop on shutdown.
+ */
+export const startScheduler = (deps: SchedulerDeps): Scheduler => {
+  const { runCron: run = runCron, ...cronDeps } = deps;
+  const config = deps.config ?? defaultConfig;
+  const controller = new AbortController();
+  const running = new Set<Promise<unknown>>();
+
+  const start = (): void => {
+    const promise = run({ ...cronDeps, signal: controller.signal })
+      .catch((error: unknown) => {
+        logger.error("cron: run failed", { error });
+      })
+      .finally(() => running.delete(promise));
+    running.add(promise);
   };
 
-let cipher: AccessTokenCipher | undefined;
+  start();
+  const timer = setInterval(start, config.cronIntervalSeconds * 1000);
 
-export const defaultCronHandler = createCronHandler({
-  db: () => pool,
-  secret: () => process.env["CRON_SECRET"],
-  workerEnv: () => {
-    const redirectUri = process.env["OAUTH_REDIRECT_URI"];
-    if (!redirectUri) {
-      throw new Error("OAUTH_REDIRECT_URI is not set");
-    }
-    return {
-      cipher: (cipher ??= AccessTokenCipher.fromEnv()),
-      machine: machineAccountFromEnv(),
-      siteUrl: new URL(redirectUri).origin,
-    };
-  },
-});
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      controller.abort();
+      await Promise.all(running);
+    },
+  };
+};
+
+/**
+ * @param env Environment to read.
+ * @returns What the workers need, from `TOKEN_ENCRYPTION_KEY`, `MACHINE_ACCOUNT_TOKEN`,
+ *   `INBOX_REPO` and `OAUTH_REDIRECT_URI`.
+ * @throws {Error} If a setting is missing or invalid.
+ */
+export const workerEnvFromEnv = (
+  env: Partial<Record<string, string>> = process.env,
+): WorkerEnv => {
+  const redirectUri = env["OAUTH_REDIRECT_URI"];
+  if (!redirectUri) {
+    throw new Error("OAUTH_REDIRECT_URI is not set");
+  }
+  return {
+    cipher: AccessTokenCipher.fromEnv(env),
+    machine: machineAccountFromEnv(env),
+    siteUrl: new URL(redirectUri).origin,
+  };
+};
+
+/**
+ * Starts the scheduler with the shared pool and the process's environment. Without a
+ * database or a worker setting, it logs a warning and starts nothing, so the server still
+ * serves the site, as in the Docker smoke test.
+ *
+ * @param db Database; defaults to the shared pool.
+ * @param env Environment to read.
+ * @param start Starts the scheduler; replaced in tests.
+ * @returns The scheduler, or `null` if it wasn't started.
+ */
+export const startSchedulerFromEnv = (
+  db: Database | null = pool,
+  env: Partial<Record<string, string>> = process.env,
+  start: (deps: SchedulerDeps) => Scheduler = startScheduler,
+): Scheduler | null => {
+  if (!db) {
+    logger.warn("cron: POSTGRES_URL is not set, scheduler not started");
+    return null;
+  }
+  let workerEnv: WorkerEnv;
+  try {
+    workerEnv = workerEnvFromEnv(env);
+  } catch (error) {
+    logger.warn("cron: not configured, scheduler not started", { error });
+    return null;
+  }
+  return start({ db, workerEnv });
+};

@@ -6,8 +6,8 @@ import { formatWithOptions } from "node:util";
 const PROBLEM_KEYWORD = "GRN-PROBLEM";
 
 /**
- * Never wrap an object over several lines. `[WHY]` Vercel caps the log lines of a request
- * (256), and a line may hold up to 256 KB.
+ * Never wrap an object over several lines. `[WHY]` One line per entry keeps logs searchable
+ * and lets a log viewer show each entry whole.
  */
 const ONE_LINE = { compact: true, breakLength: Infinity } as const;
 
@@ -25,8 +25,8 @@ const render = (args: Array<unknown>): string =>
 
 /**
  * Writes each call as one line, with OAuth tokens redacted. `warn` and `error` lines start
- * with {@link PROBLEM_KEYWORD}. `debug` writes nothing. `[WHY]` Vercel caps the log lines of
- * a request, so routine lines that say nothing new are kept out.
+ * with {@link PROBLEM_KEYWORD}. `debug` writes nothing. `[WHY]` Routine lines that say
+ * nothing new are kept out, so the logs stay short enough to read.
  */
 const logger: {
   debug: (...args: Array<unknown>) => void;

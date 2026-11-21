@@ -327,6 +327,70 @@ describe("runWorker", () => {
     expect(runSyncTask).not.toHaveBeenCalled();
   });
 
+  it("claims nothing once the signal is aborted", async () => {
+    await signUpAlice();
+    const controller = new AbortController();
+    controller.abort();
+
+    const stats = await runWorker(
+      deps(fakeClock(), { signal: controller.signal }),
+    );
+
+    expect(stats.claims).toEqual({ sync: 0, deliver: 0 });
+    expect(stats.exit).toBe("shutdown");
+  });
+
+  it("finishes its current job when the signal aborts, then claims no more", async () => {
+    await signUpAlice();
+    const controller = new AbortController();
+    vi.mocked(runDeliver).mockImplementation(async ({ db, lease }) => {
+      controller.abort();
+      await withLease(db, lease, (client) => deleteJob(client, lease));
+      return "posted";
+    });
+
+    const stats = await runWorker(
+      deps(fakeClock(), { signal: controller.signal }),
+    );
+
+    expect(stats).toMatchObject({
+      claims: { sync: 0, deliver: 1 },
+      deliveries: { posted: 1 },
+      exit: "shutdown",
+    });
+    expect(runSyncTask).not.toHaveBeenCalled();
+  });
+
+  it("cuts a wait for a delivery short when the signal aborts", async () => {
+    await signUpAlice();
+    await queueMessage("5 seconds");
+    const controller = new AbortController();
+    const clock = fakeClock();
+    clock.sleep.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve();
+    });
+
+    const stats = await runWorker(deps(clock, { signal: controller.signal }));
+
+    expect(stats).toMatchObject({ deliverWaits: 1, exit: "shutdown" });
+  });
+
+  it("aborts its default sleep with the signal", async () => {
+    await signUpAlice();
+    await queueMessage(`${defaultConfig.deliverWaitSeconds - 1} seconds`);
+    const controller = new AbortController();
+    const workerDeps = deps(fakeClock(), { signal: controller.signal });
+    delete workerDeps.sleep;
+
+    const running = runWorker(workerDeps);
+    setTimeout(() => {
+      controller.abort();
+    }, 50);
+
+    expect(await running).toMatchObject({ deliverWaits: 1, exit: "shutdown" });
+  });
+
   it("goes on after a lost lease or a failed job, leaving its lease to the reaper", async () => {
     await signUpAlice();
     vi.mocked(runDeliver).mockImplementation(({ lease }) =>
@@ -369,7 +433,7 @@ describe("runWorker", () => {
     expect(rows[0]?.token_status).toBe("invalid");
   });
 
-  it("ends the invocation when a claim fails, without throwing", async () => {
+  it("ends the loop when a claim fails, without throwing", async () => {
     const broken: Database = {
       query: () => Promise.reject(new Error("connection refused")),
       connect: () => Promise.reject(new Error("connection refused")),

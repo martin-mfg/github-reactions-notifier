@@ -203,7 +203,8 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
 
 ## 5. Non-functional requirements
 
-- **NFR-1 Cost:** runs on **Vercel Pro + Postgres** with no always-on cluster (§6.2).
+- **NFR-1 Cost:** runs on **Fly.io (one small always-on machine) + Postgres** with no
+  always-on cluster (§6.2).
 - **NFR-2 Quota safety:** GRN must never exhaust a user's GitHub rate limit. It applies a
   **single global budget policy** (§6.4); per-user configurable caps are postponed.
 - **NFR-3 Security:** OAuth tokens **encrypted at rest**, following the approach already
@@ -227,8 +228,8 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
 - **NFR-7 Observability:** structured logs, per-stage counters, dead-letter queue for
   undeliverable notifications.
 - **NFR-8 Stack parity:** same toolchain as github-stats-extended (pnpm workspaces, turbo,
-  TypeScript, vitest, eslint/prettier/knip, Vercel + Postgres) so code can move between the
-  two projects without friction.
+  TypeScript, vitest, eslint/prettier/knip, Postgres) so code can move between the
+  two projects without friction. Unlike github-stats-extended, GRN is hosted on Fly.io.
 
 ---
 
@@ -246,7 +247,7 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
               │                                  ▼                               │
    ┌──────────┴──────────┐            ┌────────────────────┐          ┌──────────┴─────────┐
    │  Scheduler (cron)   │───reap───▶ │  Postgres          │◀─────────│  Workers (Node)    │
-   │  Vercel Cron (Pro)  │            │  state + job queue │  claim   │  sync / deliver    │
+   │  in-process, 1/min  │            │  state + job queue │  claim   │  sync / deliver    │
    └─────────────────────┘            └────────────────────┘          └──────────┬─────────┘
                                                         ┌────────────────────────┼──────────┐
                                                         ▼                        ▼          ▼
@@ -259,18 +260,16 @@ name them (§6.5) — M1 stores a single implicit `authored` source per user.
 | Component | Responsibility |
 |---|---|
 | **Web app** | Marketing/docs (Starlight), OAuth flow — whose sign-in also queues the opening of the user's inbox issue (§6.7) — settings UI, and from M2 the Atom feed endpoint and the inbox repo's webhook route, which applies `/stop` and `/start` (§6.7). *(No in-app inbox in M1 — too much effort for too little, and FR-9 already limits M1 to the GitHub-native channel.)* |
-| **Scheduler** | **Vercel Cron.** Pure trigger: every minute it starts worker invocations and frees the jobs of workers that died (below). It enqueues nothing: whether a user's budget window has room is decided when a worker claims their job. **No GitHub calls** — see below. |
+| **Scheduler** | **In-process, in the web app's server.** Pure trigger: every minute it starts a cron run of worker loops and frees the jobs of workers that died (below). It enqueues nothing: whether a user's budget window has room is decided when a worker claims their job. **No GitHub calls** — see below. |
 | **Discovery workers** | One **pluggable source adapter** per subscription kind (`authored`, `owned_repos`, `repo`), each split into a cheap **incremental** pass and a low-priority **backfill** walk (§6.3). Honours FR-4d by discovering per content-type category and keeping every type the category's query returns: upserts `content`, `content_sources` and `tracked_content`, parking the rows of types that are off (§6.3); refreshes the category's `last_find_at` when it finds something. |
 | **Reaction poller** | Drains the score-ordered queue (§6.3) while budget allows, fetching reactions newer than each item's watermark (C3). Emits new-reaction rows. |
 | **Notifier** | Groups new reactions per user/channel/cadence and renders messages. Not a job of its own: the insert into `reaction_notifications` opens each user's pending message — a `deliver` job in M1, an outbox row from M2 — and the dispatcher has it rendered when it is sent (§6.6). |
 | **Dispatcher** | Does all the machine account's work — opens each user's inbox issue and delivers the notifier's messages to it (§6.7) — a new user's inbox first, then strictly in `run_at` order. **Globally serialised** for the shared machine account, token-bucket paced, idempotent, with classified retry and a dead-letter queue (§6.8). |
 | **Token service** | Encrypt/decrypt tokens, detect revocation, drive the downgrade path. |
 
-In the future we might consider replacing the cron component by [Vercel daemons](https://vercel.com/docs/daemons).
-
-Workers are plain Node processes driven by a Postgres queue
-(`SELECT … FOR UPDATE SKIP LOCKED`), so the same code runs as a Vercel function or a
-long-lived container without rewrites.
+Workers are plain Node code driven by a Postgres queue
+(`SELECT … FOR UPDATE SKIP LOCKED`), so any number of processes can run them side by side
+without rewrites.
 
 #### How a claim knows about budget without calling GitHub
 
@@ -305,21 +304,24 @@ margin (C10). Skew is normally milliseconds; workers log the offset of GitHub's 
 response header from their own clock and alarm above 2 s (the header has whole-second
 precision).
 
-#### Hosting: Vercel Pro
+#### Hosting: Fly.io
 
-Host on Vercel and schedule with **Vercel Cron** on the **Pro plan**. The app ships as a
-Docker image, built from `Dockerfile.vercel` and published to the GitHub Container Registry.
+Host on **Fly.io**, as one always-on machine that serves the web app and runs the scheduler
+in-process. Fly watches the repository and builds and deploys the Docker image from
+`Dockerfile` on each push; the release workflow also publishes that image to the GitHub
+Container Registry.
 
-Pro is a requirement rather than a preference: **Hobby cron jobs run at most once per day**
-(per-hour precision, and over-frequent expressions fail at deployment), which cannot drive an
-hourly budget window. Pro allows **once-per-minute** scheduling.
+GRN first ran on Vercel Pro, scheduled by Vercel Cron, which could start the workers only
+through an HTTP request every minute, each invocation capped at 800 s. A long-lived process
+schedules its own runs, and needs neither the cron endpoint nor its secret.
 
-**Function budget on Pro:** 300 s default, raisable to **800 s**. Work is sliced anyway: cron
-fires every minute and starts worker invocations, each of which claims a due job, works a
-bounded slice of it — stopping well short of the time limit — and releases it. No invocation
-needs to finish a user's queue — because the queue is score-ordered (§6.3), an interrupted pass
-simply resumes at the right place, and a slice boundary costs nothing but a little latency. An
-invocation killed mid-slice cannot release its job, which is why jobs are leased (below).
+**Run budget:** a cron run lasts up to **800 s** (`maxDuration`, kept from Vercel's limit).
+Work is sliced anyway: every minute the scheduler starts a cron run of worker loops, each of
+which claims a due job, works a bounded slice of it — stopping well short of the time limit —
+and releases it. No run needs to finish a user's queue — because the queue is score-ordered
+(§6.3), an interrupted pass simply resumes at the right place, and a slice boundary costs
+nothing but a little latency. A worker killed mid-slice — by a crash or a redeploy — cannot
+release its job, which is why jobs are leased (below).
 
 #### The job queue: kinds and leases
 
@@ -369,7 +371,7 @@ so the bucket's pacing, and any pause it holds, bind whichever worker claims nex
 not keep its job claimed for good. Holding a row or advisory lock for the whole job would free
 it automatically, but needs a database session open for up to 800 s and breaks behind
 transaction-mode connection poolers. A lease that is never renewed must outlast the longest
-slice, which only Vercel's `maxDuration` bounds — nothing does in a container — whereas a
+slice, which only a cron run's `maxDuration` bounds, whereas a
 renewed one need only outlast the gap between two commits, so its timeout can shrink later
 without shortening slices. Instead:
 
@@ -414,8 +416,8 @@ without shortening slices. Instead:
    15 min is deliberately generous: it need only exceed the longest gap between a live worker's
    commits, which the request timeout (step 4) bounds. Like that timeout, it is to be shortened
    once real gaps — logged at each renewal — have been observed. Until then a crash stalls its
-   user's polling that long, or all delivery if it held the machine account's lease. On
-   Vercel, 15 min also exceeds `maxDuration`, so for now no live invocation can lose its lease.
+   user's polling that long, or all delivery if it held the machine account's lease.
+   15 min also exceeds `maxDuration`, so for now no live worker can lose its lease.
 
 A rescued `sync` job resumes where it stopped, since all its progress is durable (§6.3). A
 rescued `deliver` job may already have posted, so it retries as an ambiguous failure (§6.8). A
@@ -2327,7 +2329,7 @@ Two practical notes:
 | E-mail deliverability / spam classification | Users don't get notified | Largely sidestepped by §6.7; if e-mail ships: double opt-in, SPF/DKIM/DMARC, list-unsubscribe |
 | **Watching repos you don't own reads as surveillance** | Trust/PR problem | Public data only, access re-validated (FR-4c), never expose anything the user can't already see on github.com |
 | GitHub adds a reaction webhook later | Rework | Poller sits behind an interface; a webhook source becomes an additional *producer* of `reaction_events` |
-| Vercel function time limits vs. long sweeps | Stuck jobs | Small resumable job units + watermark/date-window progress; leases renewed with every commit, and a reaper that frees a dead worker's job within ~16 min (§6.2); workers portable to a container (§6.2) |
+| Cron-run time limit vs. long sweeps | Stuck jobs | Small resumable job units + watermark/date-window progress; leases renewed with every commit, and a reaper that frees a dead worker's job within ~16 min (§6.2); workers run in any process (§6.2) |
 | **Fully-configurable sources inflate M1** | Never ships | Sources ship in order (§9), and the columns naming them ship with their adapter (§6.5); UI exposes only shipped ones |
 
 ---
@@ -2410,11 +2412,11 @@ sources that are implemented.
    batching — under load, each user's messages arrive further apart (§6.7) — with ranked
    escape hatches behind it; public-aggregation privacy is **knowingly deferred**, with FR-9b
    as the mitigation.
-3. **Hosting.** Vercel on the **Pro plan**, scheduled with Vercel Cron (once-per-minute) and
-   300–800 s functions. Work is sliced — each user's one `sync` job is released after every
-   slice and stays due while their budget has room — so no invocation depends on finishing a
-   user's queue; jobs are leased, so the cron's reaper frees a killed invocation's job within
-   ~16 min (§6.2).
+3. **Hosting.** Fly.io, one always-on machine whose server runs the scheduler in-process
+   (once per minute), with cron runs of up to 800 s. Work is sliced — each user's one `sync`
+   job is released after every slice and stays due while their budget has room — so no run
+   depends on finishing a user's queue; jobs are leased, so the cron's reaper frees a killed
+   worker's job within ~16 min (§6.2).
 4. **Scope of "their content".** Fully configurable subscription sources — `authored`,
    `owned_repos`, and named `repo:` watches — as the long-term shape, with the adapters *and*
    the columns naming them shipped in stages (§3, §9, §6.5). M1 stores one implicit

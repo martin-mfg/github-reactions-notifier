@@ -66,6 +66,8 @@ export interface Config {
    * reactions queued meanwhile, is due this long after the posted digest's `run_at` (§10).
    */
   digestWindowSeconds: number;
+  /** How often the in-process scheduler starts a cron run (§7.1). */
+  cronIntervalSeconds: number;
   /** How many worker loops each cron run starts (§7.1). */
   workersPerCron: number;
   /**
@@ -75,8 +77,9 @@ export interface Config {
    */
   deliverWaitSeconds: number;
   /**
-   * The function's `maxDuration` (§7.1). Workers claim no job within two request timeouts of
-   * it. Must match the deployment's setting.
+   * A cron run's `maxDuration` (§7.1): its workers claim no job within two request timeouts of
+   * it. `[WHY]` Kept from the Vercel function limit, so a run's workers exit and the reaper's
+   * age (`leaseReapAgeSeconds`) exceeds any live run.
    */
   maxDurationSeconds: number;
   /** An offset of GitHub's `Date` header from Postgres' clock above this alerts (NFR-7). */
@@ -114,6 +117,7 @@ export const defaultConfig: Config = {
   snapshotBatch: 50,
   snapshotRetryDelaySeconds: 60 * 60,
   digestWindowSeconds: 5 * 60,
+  cronIntervalSeconds: 60,
   workersPerCron: 1,
   deliverWaitSeconds: 10,
   maxDurationSeconds: 790,

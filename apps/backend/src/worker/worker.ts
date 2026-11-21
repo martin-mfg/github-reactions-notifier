@@ -34,15 +34,17 @@ export interface WorkerDeps {
   /** GRN's site, linked from FR-17's notice. */
   siteUrl: string;
   config?: Config;
-  /** When the function invocation started (epoch ms); defaults to the worker's start. */
+  /** When the cron run started (epoch ms); defaults to the worker's start. */
   startedAt?: number;
-  /** The local clock (epoch ms), used only for the invocation's deadline; replaced in tests. */
+  /** The local clock (epoch ms), used only for the run's deadline; replaced in tests. */
   now?: () => number;
   /** Waits `ms` milliseconds; replaced in tests. */
   sleep?: (ms: number) => Promise<void>;
+  /** Aborted on shutdown: the worker finishes its current job, then claims no more. */
+  signal?: AbortSignal;
 }
 
-/** One worker invocation's per-stage counters (NFR-7). */
+/** One worker loop's per-stage counters (NFR-7). */
 export interface WorkerStats {
   claims: Record<JobKind, number>;
   /** The `sync` tasks that ran; `noToken` counts jobs released for an unreadable token. */
@@ -53,8 +55,11 @@ export interface WorkerStats {
   errors: number;
   /** Waits for a pending `deliver` job to fall due (`DELIVER_WAIT`). */
   deliverWaits: number;
-  /** Why the loop ended: `idle` when nothing was due and no delivery due soon. */
-  exit: "idle" | "deadline" | "claim-failed";
+  /**
+   * Why the loop ended: `idle` when nothing was due and no delivery due soon, `shutdown` when
+   * the process is stopping.
+   */
+  exit: "idle" | "deadline" | "claim-failed" | "shutdown";
   durationSeconds: number;
 }
 
@@ -103,25 +108,30 @@ const runSyncJob = async (
 };
 
 /**
- * One worker invocation (§7.1): claims a job, runs one task or one `deliver` job, releases
- * it, and repeats. The two kinds take turns being claimed first. When nothing is due, it
- * exits, unless a pending `deliver` job falls due within `DELIVER_WAIT`: then it waits for
- * that without holding a lease, and claims again. `[WHY]` Instances are billed while they
- * run, idle or not; the next cron run picks up whatever falls due later. It claims no job
+ * One worker loop of a cron run (§7.1): claims a job, runs one task or one `deliver` job,
+ * releases it, and repeats. The two kinds take turns being claimed first. When nothing is
+ * due, it exits, unless a pending `deliver` job falls due within `DELIVER_WAIT`: then it
+ * waits for that without holding a lease, and claims again. `[WHY]` An idle loop would only
+ * poll the database; the next cron run picks up whatever falls due later. It claims no job
  * within two request timeouts of `maxDuration`, and exits instead of waiting past that point.
+ * Once `signal` aborts, it claims no more and cuts short any wait.
  *
  * A job that throws keeps its lease, so the reaper retries it and alerts on repeats (§7.3);
- * the worker goes on with the next one. A failed claim ends the invocation. It never throws.
+ * the worker goes on with the next one. A failed claim ends the loop. It never throws.
  * Each job's result and duration are logged on its one line (NFR-7): a `sync` job's task line
  * (see {@link TaskLog}), or a `deliver` job's `job finished`.
  *
  * @param deps The worker's dependencies.
- * @returns The invocation's counters, also logged.
+ * @returns The loop's counters, also logged.
  */
 export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
   const config = deps.config ?? defaultConfig;
   const now = deps.now ?? Date.now;
-  const sleep = deps.sleep ?? ((ms: number) => delay(ms));
+  const { signal } = deps;
+  const sleep =
+    deps.sleep ??
+    ((ms: number) =>
+      delay(ms, undefined, signal && { signal }).catch(() => undefined));
   const startedAt = deps.startedAt ?? now();
   const stopClaimingAt =
     startedAt +
@@ -139,6 +149,10 @@ export const runWorker = async (deps: WorkerDeps): Promise<WorkerStats> => {
 
   let order: [JobKind, JobKind] = ["deliver", "sync"];
   while (now() < stopClaimingAt) {
+    if (signal?.aborted) {
+      stats.exit = "shutdown";
+      break;
+    }
     let lease: Lease | null;
     let dueIn: number | null = null;
     try {
