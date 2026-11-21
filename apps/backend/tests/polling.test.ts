@@ -508,7 +508,7 @@ describe("runPoll", () => {
 
   it("probes only items not checked for D, the top probeBatch by score", async () => {
     const session = await setUp();
-    await track("I_recent", { checkedAgo: "3 minutes", eventAgo: "1 minute" });
+    await track("I_recent", { checkedAgo: "2 minutes", eventAgo: "1 minute" });
     await track("I_hot", { checkedAgo: "7 minutes", eventAgo: "1 minute" });
     await track("I_cold", { checkedAgo: "7 minutes", eventAgo: "1 year" });
     await track("I_waiting", { checkedAgo: "10 days", eventAgo: "1 year" });
@@ -524,7 +524,7 @@ describe("runPoll", () => {
       id_1: "I_waiting",
     });
     expect((await item("I_cold")).checked_ago).toBeGreaterThan(299);
-    expect((await item("I_recent")).checked_ago).toBeLessThan(181);
+    expect((await item("I_recent")).checked_ago).toBeLessThan(121);
   });
 
   it("logs a drill-down overflow as an error, stores the page, and sends no second drill-down", async () => {
@@ -666,7 +666,10 @@ describe("runPoll", () => {
         expect(row.watermark_at).toEqual(row.enabled_at);
       }
       expect(await syncJob()).toMatchObject({ locked_by: null });
-      expect((await syncJob())?.due_in).toBeGreaterThan(290);
+      expect((await syncJob())?.due_in).toBeCloseTo(
+        defaultConfig.syncRetrySeconds,
+        0,
+      );
     },
   );
 
@@ -688,7 +691,10 @@ describe("runPoll", () => {
     expect(row.checked_ago).toBeGreaterThan(299);
     expect(row.watermark_at).toEqual(row.enabled_at);
     expect(await syncJob()).toMatchObject({ locked_by: null });
-    expect((await syncJob())?.due_in).toBeGreaterThan(290);
+    expect((await syncJob())?.due_in).toBeCloseTo(
+      defaultConfig.syncRetrySeconds,
+      0,
+    );
   });
 });
 

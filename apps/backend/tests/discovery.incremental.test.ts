@@ -437,7 +437,7 @@ describe("runIncrementalDiscovery", () => {
        FROM jobs WHERE kind = 'sync'`,
     );
     expect(rows[0]?.locked_by).toBeNull();
-    expect(rows[0]?.due_in).toBeCloseTo(300, 0);
+    expect(rows[0]?.due_in).toBeCloseTo(defaultConfig.syncRetrySeconds, 0);
   });
 
   it("stops the comment pass on updatedAt, so an edited old comment doesn't end it early", async () => {

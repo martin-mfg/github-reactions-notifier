@@ -569,7 +569,7 @@ describe("runBackfill", () => {
       runBackfill({ ...session, lease: await claim() }, categoryId, lost),
     ).rejects.toThrow(LeaseLostError);
 
-    // then a failed query changes nothing and retries after 5 min
+    // then a failed query changes nothing and retries after syncRetrySeconds
     const failed = vi.fn<BackfillFetcher>(badGateway);
     expect(
       await runBackfill(
@@ -578,7 +578,10 @@ describe("runBackfill", () => {
         failed,
       ),
     ).toEqual({ ok: false, failure: { kind: "transient" } });
-    expect((await syncJob())?.due_in).toBeCloseTo(300, 0);
+    expect((await syncJob())?.due_in).toBeCloseTo(
+      defaultConfig.syncRetrySeconds,
+      0,
+    );
     expect(await trackedIds()).toEqual(["I_2", "I_3"]);
     expect(await windows()).toEqual([
       { start: iso(BACKFILL_START), end: iso(at(-20)) },
@@ -967,7 +970,10 @@ describe("runThreadScans", () => {
     expect(await threadScans()).toEqual([
       { thread: "I_long", since: iso(at(0)), created: iso(at(-100)) },
     ]);
-    expect((await syncJob())?.due_in).toBeCloseTo(300, 0);
+    expect((await syncJob())?.due_in).toBeCloseTo(
+      defaultConfig.syncRetrySeconds,
+      0,
+    );
   });
 });
 

@@ -182,8 +182,8 @@ describe("chooseSyncTask", () => {
   it("does not poll or discover before D and D_discovery have passed", async () => {
     await setUp();
     await windowAt("0 seconds", "0 seconds");
-    await discovered("3 minutes", "1 minute");
-    await track("I_1", "3 minutes", "1 minute");
+    await discovered("2 minutes", "1 minute");
+    await track("I_1", "2 minutes", "1 minute");
 
     expect(await choose()).toMatchObject({ kind: "backfill" });
   });
@@ -196,13 +196,13 @@ describe("chooseSyncTask", () => {
     expect(task.kind).toBe("idle");
     expect(
       task.kind === "idle" && (task.until.getTime() - Date.now()) / 1000,
-    ).toBeCloseTo(300, -1);
+    ).toBeCloseTo(120, -1);
 
-    await track("I_1", "3 minutes", "1 minute");
+    await track("I_1", "2 minutes", "1 minute");
     task = await choose();
     expect(
       task.kind === "idle" && (task.until.getTime() - Date.now()) / 1000,
-    ).toBeCloseTo(180, -1);
+    ).toBeCloseTo(60, -1);
   });
 });
 
@@ -291,7 +291,7 @@ describe("chooseSyncTask: the snapshot sweep (M1.1 §4.1)", () => {
     const later = await choose();
     expect(
       later.kind === "idle" && (later.until.getTime() - Date.now()) / 1000,
-    ).toBeCloseTo(300, -1);
+    ).toBeCloseTo(120, -1);
   });
 });
 
@@ -350,7 +350,7 @@ describe("chooseSyncTask: summary mode (M1.2 §4.1)", () => {
        VALUES ('U_alice', 'I_snap', now() + interval '1 hour')`,
     );
 
-    // in notify mode, the item's poll (in 5 minutes) would wake the job first
+    // in notify mode, the item's poll (in 2 minutes) would wake the job first
     const task = await choose();
     expect(task.kind).toBe("idle");
     expect(
@@ -416,7 +416,7 @@ describe("runSyncTask", () => {
   it("releases the job until the next item is due when idle", async () => {
     const { session } = await setUp();
     await db.query("DELETE FROM backfill_windows");
-    await track("I_1", "3 minutes", "1 minute");
+    await track("I_1", "1 minute", "1 minute");
 
     expect(await runSyncTask(session)).toMatchObject({ kind: "idle" });
 
@@ -428,7 +428,7 @@ describe("runSyncTask", () => {
        FROM jobs WHERE kind = 'sync'`,
     );
     expect(rows[0]?.locked_by).toBeNull();
-    expect(rows[0]?.due_in).toBeCloseTo(180, -1);
+    expect(rows[0]?.due_in).toBeCloseTo(120, -1);
   });
   describe("one log line per task", () => {
     const linesLogged = () =>
@@ -483,7 +483,7 @@ describe("runSyncTask", () => {
     it("writes a sync task line when idle", async () => {
       const { session } = await setUp();
       await db.query("DELETE FROM backfill_windows");
-      await track("I_1", "3 minutes", "1 minute");
+      await track("I_1", "1 minute", "1 minute");
 
       await runSyncTask(session);
 

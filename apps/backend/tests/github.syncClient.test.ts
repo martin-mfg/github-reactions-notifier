@@ -466,7 +466,11 @@ describe("runQuery", () => {
 describe("settleSyncFailure", () => {
   it.each<[string, SyncFailure, number]>([
     ["a budget miss", { kind: "budget" }, 0],
-    ["a transient failure", { kind: "transient" }, 300],
+    [
+      "a transient failure",
+      { kind: "transient" },
+      defaultConfig.syncRetrySeconds,
+    ],
     [
       "a retry-after",
       { kind: "rate-limited", retryAfterSeconds: 30, resetAt: null },
@@ -475,7 +479,7 @@ describe("settleSyncFailure", () => {
     [
       "a secondary limit naming no wait",
       { kind: "rate-limited", retryAfterSeconds: null, resetAt: null },
-      300,
+      Math.max(60, defaultConfig.syncRetrySeconds),
     ],
   ])("releases the job after %s", async (_, failure, dueIn) => {
     const session = await leasedSession();
